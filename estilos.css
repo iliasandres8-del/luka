@@ -193,6 +193,7 @@ button { cursor: pointer; }
 }
 .barra button svg { width: 22px; height: 22px; }
 .barra button[aria-current="page"] { color: var(--verde); }
+.barra .luka[aria-current="page"] { color: #fff; box-shadow: 0 0 0 4px var(--verde-claro), 0 8px 18px -6px rgba(31, 122, 85, .6); }
 .barra .luka {
   width: 56px; height: 56px; min-width: 56px; border-radius: 50%; margin-top: -22px;
   background: var(--verde); color: #fff;
