@@ -17,11 +17,15 @@ const BANCOS: [RegExp, string][] = [
   [/itau|itaú/i, "Itaú"], [/caja ?social/i, "Caja Social"], [/rappi/i, "RappiPay"], [/movii/i, "Movii"],
 ];
 
-// Palabras que delatan la tarjeta (igual que en la app, más comercios comunes)
+// Palabras que delatan la tarjeta (categoría), con comercios comunes de Colombia
 const PISTAS: Record<string, RegExp> = {
-  Comida: /almuerzo|desayuno|cena|comida|corrientazo|rappi|ifood|domicilio|mercado|\bd1\b|\bara\b|olimpica|olímpica|éxito|exito|carulla|jumbo|tinto|caf[eé]|perro|hamburguesa|pizza|empanada|arepa|panader|snack|pollo|restaurante|kfc|mcdonald|frisby|subway|crepes|jeno|dominos|oxxo|justo y bueno|isimo/i,
+  Comida: /almuerzo|desayuno|cena|comida|corrientazo|rappi|ifood|domicilio|mercado(?! ?libre)|\bd1\b|\bara\b|olimpica|olímpica|éxito|exito|carulla|jumbo|tinto|caf[eé]|perro|hamburguesa|pizza|empanada|arepa|panader|snack|pollo|restaurante|kfc|mcdonald|frisby|subway|crepes|jeno|dominos|oxxo|justo y bueno|isimo/i,
   Transporte: /gasolina|terpel|primax|texaco|biomax|esso|mobil|\bbus\b|transmetro|taxi|uber|didi|indriver|picap|cabify|parqueadero|peaje|pasaje|metro|sitp|tanqueo|estaci[oó]n de servicio/i,
-  Salidas: /cine|royal films|cinemark|cine colombia|procinal|rumba|cerveza|bar\b|discoteca|concierto|tuboleta|eticket|estadio|netflix|spotify|disney|hbo|max\b|prime video|steam|playstation|xbox|nintendo/i,
+  Salidas: /cine|royal films|cinemark|cine colombia|procinal|rumba|cerveza|\bbar\b|discoteca|concierto|tuboleta|eticket|estadio/i,
+  Compras: /falabella|zara|koaj|arturo calle|tennis|adidas|nike|mercado libre|mercadolibre|amazon|temu|shein|alkosto|ktronix|homecenter|miniso/i,
+  Estudio: /universidad|unisim|librer|panamericana|papeler|udemy|platzi|coursera/i,
+  Salud: /droguer|farmac|cruz verde|pasteur|cl[ií]nica|odonto|smart ?fit|bodytech|gimnasio/i,
+  Suscripciones: /netflix|spotify|disney|hbo|\bmax\b|prime video|youtube|apple\.com|google|icloud|claro|movistar|tigo|\bwom\b|steam|playstation|xbox|nintendo/i,
 };
 
 const titulo = (s: string) => s.toLowerCase().replace(/(^|\s|\/)(\S)/g, (_, a, b) => a + b.toUpperCase()).trim();

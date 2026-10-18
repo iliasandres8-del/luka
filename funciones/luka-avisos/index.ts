@@ -1,8 +1,8 @@
 // Avisos de Luka al celular (web push).
 // GET            -> llave pública para suscribirse
-// POST manana    -> 7 a. m.: "Hoy puedes gastar $X" (lo llama pg_cron)
+// POST manana    -> 7 a. m.: "Hoy puedes gastar $X" con el saldo real hasta el próximo pago (pg_cron)
 // POST noche     -> 9 p. m.: recordatorio si no anotó nada hoy (pg_cron)
-// POST sobre     -> cuando un gasto deja una tarjeta en 80 % o en rojo (trigger de movimientos)
+// POST sobre     -> cuando un gasto pasa el 80 % o el 100 % del tope de una tarjeta (trigger de movimientos)
 // POST prueba    -> la persona se manda un aviso de prueba (con su sesión)
 // Las llamadas internas traen x-cron, un secreto guardado en la tabla privado.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -66,31 +66,54 @@ function colombia() {
   };
 }
 
-// Saldo de cada tarjeta este mes, igual que en la app
-async function saldos(userId: string, inicioMes: string) {
-  return await sql`
-    select s.id, s.nombre, s.tipo, s.presupuesto,
-      s.presupuesto
-        - coalesce(sum(m.monto) filter (where m.sobre_id = s.id and m.tipo in ('gasto','traslado','abono')), 0)
-        + coalesce(sum(m.monto) filter (where m.sobre_destino_id = s.id and m.tipo in ('traslado','retiro')), 0) as saldo
-    from public.sobres s
-    left join public.movimientos m on (m.sobre_id = s.id or m.sobre_destino_id = s.id) and m.fecha >= ${inicioMes}
-    where s.user_id = ${userId} and not s.archivado
-    group by s.id order by s.orden`;
+// Próximo día de pago según cada cuánto le pagan (fechas de Colombia como UTC a medianoche)
+function proximoPago(frecuencia: string, dias: number[], hoy: Date) {
+  if (frecuencia === "semanal" && dias.length) {
+    let d = new Date(hoy.getTime() + 864e5);
+    while (d.getUTCDay() !== dias[0] % 7) d = new Date(d.getTime() + 864e5);
+    return d;
+  }
+  if ((frecuencia === "mensual" || frecuencia === "quincenal") && dias.length) {
+    const c: Date[] = [];
+    for (let k = 0; k < 2; k++) for (const dia of dias) {
+      const fin = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() + k + 1, 0)).getUTCDate();
+      c.push(new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() + k, Math.min(dia, fin))));
+    }
+    return c.filter((d) => d > hoy).sort((x, y) => x.getTime() - y.getTime())[0];
+  }
+  return new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() + 1, 1));
 }
 
 async function manana() {
   const c = colombia();
-  const gente = await sql`select p.id, p.nombre from public.perfiles p where p.aviso_manana and p.bienvenida_lista and exists (select 1 from public.suscripciones x where x.user_id = p.id)`;
+  const ahora = new Date(Date.now() - 5 * 3600e3);
+  const hoy = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate()));
+  const gente = await sql`
+    select p.id, p.nombre, p.frecuencia, p.dias_pago,
+      coalesce((select sum(case m.tipo when 'ingreso' then m.monto when 'retiro' then m.monto when 'gasto' then -m.monto when 'abono' then -m.monto else 0 end)
+                from public.movimientos m where m.user_id = p.id), 0)::bigint as saldo
+    from public.perfiles p
+    where p.aviso_manana and p.bienvenida_lista and exists (select 1 from public.suscripciones x where x.user_id = p.id)`;
   let n = 0;
   for (const p of gente) {
-    const s = await saldos(p.id, c.inicioMes);
-    const libre = s.filter((x) => x.tipo === "gasto").reduce((t, x) => t + Math.max(0, Number(x.saldo)), 0);
-    const hoy = Math.floor(libre / c.quedan / 50) * 50;
-    const fijos = await sql`select nombre, monto, dia_mes from public.gastos_fijos where user_id = ${p.id} and activo and dia_mes in (${c.dia}, ${c.dia + 1})`;
-    let cuerpo = `Te quedan ${c.quedan} días del mes.`;
-    if (fijos.length) cuerpo += ` ${fijos[0].dia_mes === c.dia ? "Hoy" : "Mañana"} toca pagar ${fijos[0].nombre} (${pesos(Number(fijos[0].monto))}).`;
-    n += await enviar(p.id, `${p.nombre ? p.nombre.split(" ")[0] + ", hoy" : "Hoy"} puedes gastar ${pesos(hoy)}`, cuerpo, "manana");
+    const pago = proximoPago(p.frecuencia, p.dias_pago || [], hoy);
+    const dias = Math.max(1, Math.round((pago.getTime() - hoy.getTime()) / 864e5));
+    // Fijos sin pagar este mes que vencen antes del próximo pago
+    const fijos = await sql`
+      select f.nombre, f.monto, f.dia_mes from public.gastos_fijos f
+      where f.user_id = ${p.id} and f.activo and f.dia_mes is not null
+        and not exists (select 1 from public.movimientos m where m.user_id = ${p.id} and m.tipo = 'gasto' and m.descripcion = f.nombre and m.fecha >= ${c.inicioMes})`;
+    const finMes = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() + 1, 0)).getUTCDate();
+    const pendiente = fijos.filter((f) => {
+      let d = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), Math.min(f.dia_mes, finMes)));
+      if (d < hoy) d = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() + 1, f.dia_mes));
+      return d < pago;
+    }).reduce((t, f) => t + Number(f.monto), 0);
+    const porDia = Math.max(0, Math.floor((Number(p.saldo) - pendiente) / dias / 50) * 50);
+    let cuerpo = `Tienes ${pesos(Number(p.saldo))} y tu pago llega en ${dias} ${dias === 1 ? "día" : "días"}.`;
+    const pronto = fijos.find((f) => f.dia_mes === c.dia || f.dia_mes === c.dia + 1);
+    if (pronto) cuerpo += ` ${pronto.dia_mes === c.dia ? "Hoy" : "Mañana"} toca pagar ${pronto.nombre} (${pesos(Number(pronto.monto))}).`;
+    n += await enviar(p.id, `${p.nombre ? p.nombre.split(" ")[0] + ", hoy" : "Hoy"} puedes gastar ${pesos(porDia)}`, cuerpo, "manana");
   }
   return n;
 }
@@ -108,17 +131,20 @@ async function noche() {
 }
 
 async function sobre(movimientoId: string) {
-  const [m] = await sql`select user_id, sobre_id, monto, tipo from public.movimientos where id = ${movimientoId}`;
-  if (!m || m.tipo !== "gasto" || !m.sobre_id) return 0;
+  const [m] = await sql`select user_id, sobre_id, monto, tipo, origen from public.movimientos where id = ${movimientoId}`;
+  if (!m || m.tipo !== "gasto" || !m.sobre_id || m.origen === "ajuste") return 0;
   const [p] = await sql`select aviso_sobres from public.perfiles where id = ${m.user_id}`;
   if (!p?.aviso_sobres) return 0;
   const c = colombia();
-  const s = (await saldos(m.user_id, c.inicioMes)).find((x) => x.id === m.sobre_id);
-  if (!s || s.tipo !== "gasto" || Number(s.presupuesto) <= 0) return 0;
-  const despues = Number(s.saldo), antes = despues + Number(m.monto), presu = Number(s.presupuesto);
-  if (antes >= 0 && despues < 0) return enviar(m.user_id, `Te pasaste en ${s.nombre}`, `Vas ${pesos(-despues)} por encima. Pasa plata de otra tarjeta para cuadrar.`, "sobre-" + s.id);
-  if (antes > presu * 0.2 && despues <= presu * 0.2 && despues >= 0)
-    return enviar(m.user_id, `${s.nombre} ya va en ${Math.round((1 - despues / presu) * 100)} %`, `Te quedan ${pesos(despues)} para ${c.quedan} días: ${pesos(Math.floor(despues / c.quedan / 50) * 50)} por día.`, "sobre-" + s.id);
+  const [s] = await sql`
+    select s.nombre, s.presupuesto,
+      coalesce((select sum(x.monto) from public.movimientos x where x.sobre_id = s.id and x.tipo = 'gasto' and x.origen <> 'ajuste' and x.fecha >= ${c.inicioMes}), 0)::bigint as gastado
+    from public.sobres s where s.id = ${m.sobre_id}`;
+  const tope = Number(s?.presupuesto || 0);
+  if (!tope) return 0;
+  const despues = Number(s.gastado), antes = despues - Number(m.monto);
+  if (antes <= tope && despues > tope) return enviar(m.user_id, `Te pasaste del tope de ${s.nombre}`, `Llevas ${pesos(despues)} de ${pesos(tope)} este mes.`, "sobre-" + m.sobre_id);
+  if (antes < tope * 0.8 && despues >= tope * 0.8) return enviar(m.user_id, `${s.nombre} ya va en ${Math.round((despues / tope) * 100)} %`, `Te quedan ${pesos(tope - despues)} de tu tope para ${c.quedan} días.`, "sobre-" + m.sobre_id);
   return 0;
 }
 

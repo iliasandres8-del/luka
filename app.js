@@ -129,7 +129,7 @@ const opcionesDe = (cat) => CATEGORIAS_BASE.find((c) => c.nombre === cat?.nombre
 // Descripciones que la persona más usa en una tarjeta, más las de siempre
 function descripcionesDe(cat) {
   const veces = {};
-  for (const m of estado.movs) if (m.sobre_id === cat.id && m.descripcion) veces[m.descripcion] = (veces[m.descripcion] || 0) + 1;
+  for (const m of estado.movs) if (m.tipo === "gasto" && m.sobre_id === cat.id && m.descripcion) veces[m.descripcion] = (veces[m.descripcion] || 0) + 1;
   const usadas = Object.entries(veces).sort((a, b) => b[1] - a[1]).map(([d]) => d);
   return [...new Set([...usadas.slice(0, 4), ...opcionesDe(cat)])].slice(0, 8);
 }
@@ -176,7 +176,9 @@ function planDelDia() {
   const pagados = fijosPagados();
   const fijosAntes = estado.fijos.filter((f) => f.dia_mes && !pagados.has(f.nombre) && proximoFijo(f.dia_mes) < pago);
   const fijosPend = fijosAntes.reduce((t, f) => t + f.monto, 0);
-  const gastadoHoy = suma(gastosEntre(h, sumaDias(h, 1)));
+  // Los fijos ya estaban apartados: pagarlos no le quita a lo de hoy
+  const nombresFijos = new Set(estado.fijos.map((f) => f.nombre));
+  const gastadoHoy = suma(gastosEntre(h, sumaDias(h, 1)).filter((m) => sobreDe(m.sobre_id)?.tipo !== "fijo" && !nombresFijos.has(m.descripcion)));
   const base = estado.saldo + gastadoHoy - fijosPend;
   const porDia = Math.max(0, Math.floor(base / dias / 50) * 50);
   return { pago, dias, fijosAntes, fijosPend, gastadoHoy, porDia, quedaHoy: porDia - gastadoHoy };
