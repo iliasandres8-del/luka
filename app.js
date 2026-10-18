@@ -1206,7 +1206,7 @@ function proyeccion(m) {
   } else {
     const mas = Math.ceil(m.aporte_mensual * 0.25 / 1000) * 1000;
     const meses2 = Math.ceil(falta / (m.aporte_mensual + mas));
-    if (meses2 < meses) { const d2 = new Date(); d2.setMonth(d2.getMonth() + meses2); texto += `. Si le subes ${pesos(mas)} al mes, en ${MESES[d2.getMonth()]}.`; }
+    if (meses2 < meses) { const d2 = new Date(); d2.setMonth(d2.getMonth() + meses2); texto += `. Si le subes ${pesos(mas)} al mes, en ${MESES[d2.getMonth()]} de ${d2.getFullYear()}.`; }
     else texto += ".";
   }
   return { texto };
