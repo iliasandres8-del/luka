@@ -60,7 +60,8 @@ async function contexto(token: string) {
   const saldo: Record<string, number> = {};
   for (const s of sobres) saldo[s.id] = s.presupuesto;
   for (const x of movs) {
-    if (x.tipo === "gasto" && x.sobre_id && x.sobre_id in saldo) saldo[x.sobre_id] -= x.monto;
+    if ((x.tipo === "gasto" || x.tipo === "abono") && x.sobre_id && x.sobre_id in saldo) saldo[x.sobre_id] -= x.monto;
+    if (x.tipo === "retiro" && x.sobre_destino_id && x.sobre_destino_id in saldo) saldo[x.sobre_destino_id] += x.monto;
     if (x.tipo === "traslado") {
       if (x.sobre_id && x.sobre_id in saldo) saldo[x.sobre_id] -= x.monto;
       if (x.sobre_destino_id && x.sobre_destino_id in saldo) saldo[x.sobre_destino_id] += x.monto;
@@ -85,7 +86,7 @@ async function contexto(token: string) {
     `Metas: ${metas.length ? metas.map((x: { nombre: string; objetivo: number; ahorrado: number; fecha_objetivo: string | null }) => `${x.nombre}: lleva ${pesos(x.ahorrado)} de ${pesos(x.objetivo)}${x.fecha_objetivo ? `, la quiere para ${x.fecha_objetivo.slice(0, 7)}` : ""}`).join("; ") : "ninguna"}.`,
     `Gastos fijos: ${fijos.length ? fijos.map((f: { nombre: string; monto: number; dia_mes: number | null }) => `${f.nombre} ${pesos(f.monto)}${f.dia_mes ? ` el día ${f.dia_mes}` : ""} (${pagados.has(f.nombre) ? "ya pagado" : "pendiente"})`).join("; ") : "ninguno"}.`,
     `Últimos movimientos del mes:`,
-    ...movs.slice(0, 25).map((x) => `- ${x.fecha.slice(0, 10)} ${x.tipo} ${pesos(x.monto)} ${x.tipo === "traslado" ? `de ${nombreDe(x.sobre_id)} a ${nombreDe(x.sobre_destino_id)}` : `${x.descripcion || ""} (${x.tipo === "gasto" ? nombreDe(x.sobre_id) : "ingreso"}${x.metodo ? ", " + x.metodo : ""})`}`),
+    ...movs.slice(0, 25).map((x) => `- ${x.fecha.slice(0, 10)} ${x.tipo} ${pesos(x.monto)} ${x.tipo === "abono" ? `${x.descripcion} desde ${nombreDe(x.sobre_id)}` : x.tipo === "retiro" ? `${x.descripcion} a ${nombreDe(x.sobre_destino_id)}` : x.tipo === "traslado" ? `de ${nombreDe(x.sobre_id)} a ${nombreDe(x.sobre_destino_id)}` : `${x.descripcion || ""} (${x.tipo === "gasto" ? nombreDe(x.sobre_id) : "ingreso"}${x.metodo ? ", " + x.metodo : ""})`}`),
   ].join("\n");
 
   return { texto, hoy, sobres: sobres.map((s) => ({ nombre: s.nombre, tipo: s.tipo })) };

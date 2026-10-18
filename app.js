@@ -76,7 +76,7 @@ async function cargarTodo() {
   const [p, s, m, f, mv] = await Promise.all([
     sb.from("perfiles").select("*").eq("id", id).maybeSingle(),
     sb.from("sobres").select("*").eq("archivado", false).order("orden"),
-    sb.from("metas").select("*").eq("lograda", false).order("creado"),
+    sb.from("metas").select("*").order("creado"),
     sb.from("gastos_fijos").select("*").eq("activo", true).order("dia_mes", { nullsFirst: false }),
     sb.from("movimientos").select("*").gte("fecha", desde).order("fecha", { ascending: false }),
   ]);
@@ -94,7 +94,8 @@ function saldos() {
   const r = {};
   for (const s of estado.sobres) r[s.id] = s.presupuesto;
   for (const m of estado.movimientos) {
-    if (m.tipo === "gasto" && m.sobre_id in r) r[m.sobre_id] -= m.monto;
+    if ((m.tipo === "gasto" || m.tipo === "abono") && m.sobre_id in r) r[m.sobre_id] -= m.monto;
+    if (m.tipo === "retiro" && m.sobre_destino_id in r) r[m.sobre_destino_id] += m.monto;
     if (m.tipo === "traslado") {
       if (m.sobre_id in r) r[m.sobre_id] -= m.monto;
       if (m.sobre_destino_id in r) r[m.sobre_destino_id] += m.monto;
@@ -496,7 +497,7 @@ async function guardarBienvenida(b, libre, boton) {
       const ahorro = sobres.find((s) => s.tipo === "ahorro");
       const { error } = await sb.from("metas").insert({
         nombre: b.meta.nombre, objetivo: b.meta.objetivo, ahorrado: b.meta.ahorrado,
-        fecha_objetivo: b.meta.fecha ? b.meta.fecha + "-01" : null, sobre_id: ahorro?.id,
+        fecha_objetivo: b.meta.fecha ? b.meta.fecha + "-01" : null, sobre_id: ahorro?.id, aporte_mensual: ahorro?.presupuesto || 0,
       });
       if (error) throw error;
     }
@@ -559,7 +560,7 @@ function pintarApp() {
     movimientos: vistaMovimientos,
     ajustar: vistaAjustar,
     luka: vistaLuka,
-    metas: () => vistaPronto("Metas", "Aquí vas a ver tus metas, abonarles y saber cuándo llegas a cada una.", 4),
+    metas: vistaMetas,
     yo: vistaYo,
   };
   app.innerHTML = vistas[estado.vista]() + barra();
@@ -582,6 +583,7 @@ const enganches = {
   movimientos: engancharMovimientos,
   ajustar: engancharAjustar,
   luka: engancharLuka,
+  metas: engancharMetas,
   yo() {
     document.getElementById("salir").onclick = () => sb.auth.signOut();
     document.getElementById("rehacer").onclick = () => {
@@ -591,6 +593,7 @@ const enganches = {
       b.textContent = "Se borran tus sobres, fijos y meta. Toca otra vez para seguir";
     };
     document.getElementById("ir-ajustar").onclick = () => ir("ajustar");
+    pintarAvisos();
   },
 };
 
@@ -621,6 +624,10 @@ function consejo() {
     return `<div class="nota"><b>Se viene un pago fijo</b>${esc(proximo.nombre)} (${pesos(proximo.monto)}) es ${cuando}. Ya está apartado en Fijos.</div>`;
   }
 
+  // Plata apartada para una meta que todavía no se abona
+  const apartado = estado.sobres.filter((y) => y.tipo === "ahorro" && metaDe(y.id) && s[y.id] > 0)[0];
+  if (apartado && hoy >= 3) return `<div class="nota"><b>Tienes ${pesos(s[apartado.id])} apartados para ${esc(apartado.nombre)}</b>Abónalos a la meta para no gastártelos.<br><button class="chip" data-abonar="${metaDe(apartado.id).id}" style="margin-top:8px">Abonar ahora</button></div>`;
+
   // Gastos hormiga: muchos gastos chiquitos
   const hormiga = estado.movimientos.filter((m) => m.tipo === "gasto" && m.monto <= 10000);
   if (hormiga.length >= 6) {
@@ -646,7 +653,6 @@ function vistaInicio() {
   const d = new Date();
   const nombre = estado.perfil?.nombre?.split(" ")[0] || "";
   const tarjetas = estado.sobres.filter((x) => x.tipo !== "fijo");
-  const meta = estado.metas[0];
   const alto = 96, paso = 50;
   const fijos = estado.sobres.find((x) => x.tipo === "fijo");
   const pagados = fijosPagados();
@@ -664,9 +670,10 @@ function vistaInicio() {
       ${tarjetas.map((x, i) => {
         const saldo = s[x.id];
         const esAhorro = x.tipo === "ahorro";
+        const meta = esAhorro ? metaDe(x.id) : null;
         const monto = esAhorro && meta ? pesos(meta.ahorrado) : pesos(saldo);
         const detalle = esAhorro
-          ? (meta ? `${Math.round((meta.ahorrado / meta.objetivo) * 100)} % de ${pesos(meta.objetivo)} · ` : "") + `${pesos(x.presupuesto)} al mes`
+          ? (meta ? `${Math.min(100, Math.round((meta.ahorrado / meta.objetivo) * 100))} % de ${pesos(meta.objetivo)} · ` : "") + (saldo > 0 ? `${pesos(saldo)} por abonar` : "abonado este mes")
           : saldo < 0 ? `te pasaste ${pesos(-saldo)} · era ${pesos(x.presupuesto)}` : saldo === 0 ? `agotado · era ${pesos(x.presupuesto)}` : `de ${pesos(x.presupuesto)} · ${pesos(porDia(saldo, quedan))} por día`;
         return `<button class="tarjeta" data-id="${x.id}" style="top:${i * paso}px;--c:${x.color};--t:${letraDe(x.color)}" aria-label="${esc(x.nombre)}: ${monto}. Mantén presionado para mover plata">
           <span class="arriba"><span class="nombre">${esAhorro && meta ? "Ahorro · " + esc(x.nombre) : esc(x.nombre)}</span><span class="monto">${monto}</span></span>
@@ -719,7 +726,10 @@ function engancharInicio() {
       const bajo = destinoEn(x, y);
       marcar(null);
       if (!bajo) return;
-      if ([el, bajo].some((t) => sobreDe(t.dataset.id)?.tipo !== "gasto")) return toast("Abonar o sacar de la meta llega en la parte 4.");
+      const [x1, x2] = [sobreDe(el.dataset.id), sobreDe(bajo.dataset.id)];
+      if (x2.tipo === "ahorro" && metaDe(x2.id)) return abrirAbono(metaDe(x2.id), x1.id);
+      if (x1.tipo === "ahorro" && metaDe(x1.id)) return abrirRetiro(metaDe(x1.id), x2.id);
+      if (x1.tipo !== "gasto" || x2.tipo !== "gasto") return toast("Esa tarjeta no tiene meta. Créala en Metas.");
       ir("mover", { mover: { de: el.dataset.id, a: bajo.dataset.id, monto: 0 } });
     };
     el.addEventListener("touchstart", (e) => empezar(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
@@ -736,6 +746,7 @@ function engancharInicio() {
     el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ir("sobre", { sobreAbierto: el.dataset.id }); } });
   });
 
+  app.querySelectorAll("[data-abonar]").forEach((b) => (b.onclick = () => abrirAbono(metaPorId(b.dataset.abonar))));
   const ver = document.getElementById("ver-fijos");
   if (ver) ver.onclick = () => {
     const lista = document.getElementById("lista-fijos");
@@ -763,6 +774,8 @@ function filaMovimiento(m) {
   let signo = "−", clase = "";
   if (m.tipo === "ingreso") { signo = "+"; clase = "entra"; sub = ["Ingreso", m.metodo].filter(Boolean).join(" · "); }
   if (m.tipo === "traslado") { signo = ""; clase = "pasa"; titulo = `${s?.nombre || "?"} → ${destino?.nombre || "?"}`; sub = "Movida entre tarjetas"; }
+  if (m.tipo === "abono") { signo = ""; clase = "pasa"; titulo = `Abono a ${metaPorId(m.meta_id)?.nombre || "la meta"}`; sub = `Desde ${s?.nombre || "?"}`; }
+  if (m.tipo === "retiro") { signo = ""; clase = "pasa"; titulo = `Sacado de ${metaPorId(m.meta_id)?.nombre || "la meta"}`; sub = `A ${destino?.nombre || "?"}`; }
   const hora = fechaLocal(f) === fechaLocal(new Date(m.creado)) ? `${String(f.getHours()).padStart(2, "0")}:${String(f.getMinutes()).padStart(2, "0")}` : "";
   const color = m.tipo === "ingreso" ? "var(--verde)" : (s?.color || "#c9d3cd");
   return `<button class="mov" data-mov="${m.id}">
@@ -775,6 +788,7 @@ function filaMovimiento(m) {
 function vistaSobre() {
   const x = sobreDe(estado.sobreAbierto);
   if (!x) { estado.vista = "inicio"; return vistaInicio(); }
+  if (x.tipo === "ahorro") { estado.vista = "metas"; return vistaMetas(); }
   const s = saldos()[x.id];
   const quedan = diasQuedan();
   const movs = estado.movimientos.filter((m) => m.sobre_id === x.id || m.sobre_destino_id === x.id);
@@ -801,8 +815,8 @@ function vistaSobre() {
     </div>
     ${tip ? `<div class="nota"><b>Luka dice</b>${tip}</div>` : ""}
     <div class="fila">
-      ${esAhorro ? `<p class="sub">Abonarle a la meta llega en la parte 4.</p>` : `<button class="boton" data-anotar="${x.id}">Anotar gasto</button>
-      <button class="boton claro" id="mover-desde">Mover plata</button>`}
+      <button class="boton" data-anotar="${x.id}">Anotar gasto</button>
+      <button class="boton claro" id="mover-desde">Mover plata</button>
     </div>
     <h3 class="titulo-lista">Este mes</h3>
     <div class="lista-movs">${movs.length ? movs.map(filaMovimiento).join("") : `<p class="sub">Todavía no hay movimientos en esta tarjeta.</p>`}</div>
@@ -905,9 +919,9 @@ function fechaLocal(d) {
 
 function abrirAnotar(previo = {}) {
   const editando = !!previo.id;
-  if (previo.tipo === "traslado") {
+  if (["traslado", "abono", "retiro"].includes(previo.tipo)) {
     return abrirHoja(`
-      <h2>Movida entre tarjetas</h2>
+      <h2>${{ traslado: "Movida entre tarjetas", abono: "Abono a meta", retiro: "Plata sacada de una meta" }[previo.tipo]}</h2>
       <p class="sub">${esc(previo.descripcion)} · ${pesos(previo.monto)}</p>
       <div class="acciones"><button class="boton peligro" id="borrar">Deshacer esta movida</button><button class="boton texto" data-cerrar>Cerrar</button></div>`,
       (hoja) => engancharBorrar(hoja, previo));
@@ -1057,7 +1071,7 @@ function vistaMovimientos() {
   const lista = esActual ? estado.movimientos : estado.movsMes;
   const filtro = estado.filtroMov || "todo";
   if (!lista) return `<section class="pantalla inicio"><p class="sub">Cargando…</p></section>`;
-  const vis = lista.filter((m) => filtro === "todo" || m.tipo === filtro);
+  const vis = lista.filter((m) => filtro === "todo" || m.tipo === filtro || (filtro === "ahorro" && (m.tipo === "abono" || m.tipo === "retiro")));
   const gastos = lista.filter((m) => m.tipo === "gasto").reduce((t, m) => t + m.monto, 0);
   const ingresos = lista.filter((m) => m.tipo === "ingreso").reduce((t, m) => t + m.monto, 0);
 
@@ -1082,7 +1096,7 @@ function vistaMovimientos() {
       <div><span class="sub">Te entró</span><b class="num entra">${pesos(ingresos)}</b></div>
     </div>
     <div class="chips" role="tablist">
-      ${[["todo", "Todo"], ["gasto", "Gastos"], ["ingreso", "Ingresos"], ["traslado", "Movidas"]].map(([v, t]) => `<button class="chip suave" role="tab" data-filtro="${v}" aria-pressed="${filtro === v}">${t}</button>`).join("")}
+      ${[["todo", "Todo"], ["gasto", "Gastos"], ["ingreso", "Ingresos"], ["traslado", "Movidas"], ["ahorro", "Ahorro"]].map(([v, t]) => `<button class="chip suave" role="tab" data-filtro="${v}" aria-pressed="${filtro === v}">${t}</button>`).join("")}
     </div>
     ${vis.length ? Object.entries(grupos).map(([k, g]) => `<div class="dia">${titulo(k, g.d)}</div><div class="lista-movs">${g.items.map(filaMovimiento).join("")}</div>`).join("")
       : `<div class="vacio-chico"><p class="sub">${lista.length ? "Nada con ese filtro." : "Todavía no hay nada anotado este mes."}</p>${esActual ? `<button class="boton" data-anotar>Anotar el primero</button>` : ""}</div>`}
@@ -1161,10 +1175,313 @@ function engancharAjustar() {
       presupuesto: leerMonto(app.querySelector(`[data-presu="${x.id}"]`).value),
     }));
     const res = await Promise.all(cambios.map((c) => sb.from("sobres").update({ nombre: c.nombre, presupuesto: c.presupuesto }).eq("id", c.id)));
+    for (const c of cambios) { const m = metaDe(c.id); if (m) res.push(await sb.from("metas").update({ aporte_mensual: c.presupuesto, nombre: c.nombre }).eq("id", m.id)); }
     if (res.some((r) => r.error)) { toast("No se pudo guardar todo."); e.currentTarget.disabled = false; return; }
     await cargarTodo();
     toast("Tarjetas guardadas");
     ir("inicio");
+  };
+}
+
+/* ---------- Metas ---------- */
+
+const metaPorId = (id) => estado.metas.find((m) => m.id === id);
+const metaDe = (sobreId) => estado.metas.find((m) => m.sobre_id === sobreId && !m.lograda);
+const COLORES_META = ["#2f4fb5", "#1f8a8a", "#9a4fb5", "#b5762f", "#3f6fb5"];
+
+// Cuándo se cumple una meta al ritmo del aporte mensual
+function proyeccion(m) {
+  const falta = m.objetivo - m.ahorrado;
+  if (falta <= 0) return { texto: "¡Ya la tienes completa!", listo: true };
+  if (!m.aporte_mensual) return { texto: "Sin aporte mensual no hay fecha. Ponle cuánto al mes en Editar." };
+  const meses = Math.ceil(falta / m.aporte_mensual);
+  const d = new Date(); d.setMonth(d.getMonth() + meses);
+  let texto = `A este ritmo llegas en ${MESES[d.getMonth()]} de ${d.getFullYear()}`;
+  if (m.fecha_objetivo) {
+    const [a, mes] = m.fecha_objetivo.split("-").map(Number);
+    const hoy = new Date();
+    const quedan = Math.max(1, (a - hoy.getFullYear()) * 12 + (mes - 1 - hoy.getMonth()));
+    const necesita = Math.ceil(falta / quedan / 1000) * 1000;
+    texto += d <= new Date(a, mes - 1, 28) ? ", a tiempo." : `. Para ${MESES[mes - 1]} necesitas ${pesos(necesita)} al mes.`;
+  } else {
+    const mas = Math.ceil(m.aporte_mensual * 0.25 / 1000) * 1000;
+    const meses2 = Math.ceil(falta / (m.aporte_mensual + mas));
+    if (meses2 < meses) { const d2 = new Date(); d2.setMonth(d2.getMonth() + meses2); texto += `. Si le subes ${pesos(mas)} al mes, en ${MESES[d2.getMonth()]}.`; }
+    else texto += ".";
+  }
+  return { texto };
+}
+
+function vistaMetas() {
+  const s = saldos();
+  const activas = estado.metas.filter((m) => !m.lograda);
+  const logradas = estado.metas.filter((m) => m.lograda);
+  const tieneEmergencias = estado.metas.some((m) => /emergencia/i.test(m.nombre));
+  const gastoMes = estado.sobres.filter((x) => x.tipo !== "ahorro").reduce((t, x) => t + x.presupuesto, 0);
+  return `
+  <section class="pantalla inicio">
+    <h1>Mis metas</h1>
+    ${activas.length ? activas.map((m) => {
+      const x = sobreDe(m.sobre_id);
+      const pct = Math.min(100, Math.round((m.ahorrado / m.objetivo) * 100));
+      const p = proyeccion(m);
+      const porAbonar = x ? Math.max(0, s[x.id]) : 0;
+      return `
+      <article class="meta" style="--c:${x?.color || "#2f4fb5"}">
+        <div class="meta-cab"><h2>${esc(m.nombre)}</h2><span class="num">${pct} %</span></div>
+        <div class="meta-cifra"><b class="num">${pesos(m.ahorrado)}</b><span class="sub">de ${pesos(m.objetivo)}</span></div>
+        <div class="meta-barra"><i style="width:${pct}%"></i></div>
+        <p class="sub">${p.texto}</p>
+        ${porAbonar ? `<p class="por-abonar">Este mes tienes ${pesos(porAbonar)} apartados para esta meta.</p>` : ""}
+        <div class="fila">
+          ${p.listo ? `<button class="boton" data-lograda="${m.id}">¡La logré!</button>` : `<button class="boton" data-abonar="${m.id}">Abonar</button>`}
+          <button class="boton claro" data-sacar="${m.id}" ${m.ahorrado ? "" : "disabled"}>Sacar</button>
+          <button class="boton claro icono" data-editar-meta="${m.id}" aria-label="Editar ${esc(m.nombre)}">✎</button>
+        </div>
+      </article>`;
+    }).join("") : `<div class="vacio-chico"><p class="sub">No tienes metas todavía. Con una meta es más fácil no gastarse todo.</p></div>`}
+    ${!tieneEmergencias && gastoMes ? `<div class="nota"><b>Te recomiendo un fondo para emergencias</b>Lo ideal es tener guardado un mes de gastos (${pesos(gastoMes)}) por si algo pasa: se daña el celular, te enfermas o te quedas sin trabajo.<br><button class="chip" id="crear-emergencias" style="margin-top:8px">Crear fondo de emergencias</button></div>` : ""}
+    <button class="boton claro" id="nueva-meta">+ Nueva meta</button>
+    ${logradas.length ? `<h3 class="titulo-lista">Logradas</h3><div class="lista-movs">${logradas.map((m) => `<div class="mov"><i style="background:var(--verde)"></i><span class="txt">${esc(m.nombre)}<small>${pesos(m.objetivo)}</small></span><span class="num entra">✓</span></div>`).join("")}</div>` : ""}
+  </section>`;
+}
+
+function engancharMetas() {
+  app.querySelectorAll("[data-abonar]").forEach((b) => (b.onclick = () => abrirAbono(metaPorId(b.dataset.abonar))));
+  app.querySelectorAll("[data-sacar]").forEach((b) => (b.onclick = () => abrirRetiro(metaPorId(b.dataset.sacar))));
+  app.querySelectorAll("[data-editar-meta]").forEach((b) => (b.onclick = () => abrirMeta(metaPorId(b.dataset.editarMeta))));
+  app.querySelectorAll("[data-lograda]").forEach((b) => (b.onclick = async () => {
+    const m = metaPorId(b.dataset.lograda);
+    b.disabled = true;
+    await sb.from("metas").update({ lograda: true }).eq("id", m.id);
+    if (m.sobre_id) await sb.from("sobres").update({ archivado: true }).eq("id", m.sobre_id);
+    await cargarTodo();
+    pintarApp();
+    toast(`¡Felicitaciones! Lograste «${m.nombre}».`);
+  }));
+  document.getElementById("nueva-meta").onclick = () => abrirMeta();
+  const em = document.getElementById("crear-emergencias");
+  if (em) em.onclick = () => {
+    const gastoMes = estado.sobres.filter((x) => x.tipo !== "ahorro").reduce((t, x) => t + x.presupuesto, 0);
+    abrirMeta({ nombre: "Fondo de emergencias", objetivo: gastoMes });
+  };
+}
+
+function campoMonto(id, etiqueta, valor, ayuda = "") {
+  return `<div class="campo"><label for="${id}">${etiqueta}</label><input id="${id}" class="grande" inputmode="decimal" value="${valor ? pesos(valor) : ""}" placeholder="$0" autocomplete="off">${ayuda ? `<span class="ayuda" id="${id}-ayuda">${ayuda}</span>` : ""}</div>`;
+}
+function formatearAlSalir(hoja, id) {
+  const el = hoja.querySelector("#" + id);
+  el.onblur = () => { const n = leerMonto(el.value); if (n) el.value = pesos(n); };
+  return el;
+}
+
+function abrirAbono(meta, desdeId = null) {
+  const s = saldos();
+  const ahorro = sobreDe(meta.sobre_id);
+  const opciones = estado.sobres.filter((x) => x.tipo === "gasto" || x.id === meta.sobre_id);
+  let desde = desdeId || (ahorro && s[ahorro.id] > 0 ? ahorro.id : opciones.find((x) => s[x.id] > 0)?.id || opciones[0]?.id);
+  const sugerido = Math.max(0, Math.min(s[desde] || 0, meta.objetivo - meta.ahorrado));
+  abrirHoja(`
+    <h2>Abonar a ${esc(meta.nombre)}</h2>
+    <p class="sub">Llevas ${pesos(meta.ahorrado)} de ${pesos(meta.objetivo)}.</p>
+    ${campoMonto("ab-monto", "¿Cuánto?", sugerido)}
+    <div class="campo"><span class="etiqueta">¿De qué tarjeta sale?</span>
+      <div class="chips-sobre">${opciones.map((x) => `<button type="button" class="chip-sobre" data-desde="${x.id}" style="--c:${x.color};--t:${letraDe(x.color)}" aria-pressed="${x.id === desde}">${esc(x.nombre)} · ${pesos(s[x.id])}</button>`).join("")}</div>
+    </div>
+    <div class="aviso-error" id="ab-error" hidden></div>
+    <div class="acciones"><button class="boton" id="ab-ok">Abonar</button><button class="boton texto" data-cerrar>Cancelar</button></div>`,
+    (hoja) => {
+      const monto = formatearAlSalir(hoja, "ab-monto");
+      hoja.querySelectorAll("[data-desde]").forEach((b) => (b.onclick = () => { desde = b.dataset.desde; hoja.querySelectorAll("[data-desde]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
+      hoja.querySelector("#ab-ok").onclick = async (e) => {
+        const n = leerMonto(monto.value), err = hoja.querySelector("#ab-error");
+        const falta = !n ? "Escribe cuánto vas a abonar." : n > Math.max(0, s[desde]) ? `En ${sobreDe(desde).nombre} solo hay ${pesos(Math.max(0, s[desde]))}.` : "";
+        if (falta) { err.textContent = falta; err.hidden = false; return; }
+        e.currentTarget.disabled = true;
+        const ok = await guardarMovimiento({ tipo: "abono", monto: n, sobre_id: desde, meta_id: meta.id, descripcion: `Abono a ${meta.nombre}` });
+        if (!ok) { e.currentTarget.disabled = false; return; }
+        cerrarHoja();
+        estado.vista = "metas";
+        pintarApp();
+        const m = metaPorId(meta.id);
+        toast(m.ahorrado >= m.objetivo ? `¡Completaste «${m.nombre}»!` : `Abonado. Llevas ${pesos(m.ahorrado)} de ${pesos(m.objetivo)}.`);
+      };
+    });
+}
+
+function abrirRetiro(meta, aId = null) {
+  const gasto = estado.sobres.filter((x) => x.tipo === "gasto");
+  let a = aId || gasto.find((x) => x.nombre === "Otros")?.id || gasto[0]?.id;
+  abrirHoja(`
+    <h2>Sacar de ${esc(meta.nombre)}</h2>
+    <p class="sub">Tienes ${pesos(meta.ahorrado)} ahorrados. Lo que saques pasa a una tarjeta para gastarlo.</p>
+    ${campoMonto("re-monto", "¿Cuánto?", 0)}
+    <div class="campo"><span class="etiqueta">¿A qué tarjeta?</span>
+      <div class="chips-sobre">${gasto.map((x) => `<button type="button" class="chip-sobre" data-a="${x.id}" style="--c:${x.color};--t:${letraDe(x.color)}" aria-pressed="${x.id === a}">${esc(x.nombre)}</button>`).join("")}</div>
+    </div>
+    <div class="aviso-error" id="re-error" hidden></div>
+    <div class="acciones"><button class="boton" id="re-ok">Sacar</button><button class="boton texto" data-cerrar>Cancelar</button></div>`,
+    (hoja) => {
+      const monto = formatearAlSalir(hoja, "re-monto");
+      hoja.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => { a = b.dataset.a; hoja.querySelectorAll("[data-a]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
+      hoja.querySelector("#re-ok").onclick = async (e) => {
+        const n = leerMonto(monto.value), err = hoja.querySelector("#re-error");
+        const falta = !n ? "Escribe cuánto vas a sacar." : n > meta.ahorrado ? `Solo tienes ${pesos(meta.ahorrado)} en la meta.` : "";
+        if (falta) { err.textContent = falta; err.hidden = false; return; }
+        e.currentTarget.disabled = true;
+        const ok = await guardarMovimiento({ tipo: "retiro", monto: n, sobre_destino_id: a, meta_id: meta.id, descripcion: `Sacado de ${meta.nombre}` });
+        if (!ok) { e.currentTarget.disabled = false; return; }
+        cerrarHoja();
+        pintarApp();
+        toast(`Listo: ${pesos(n)} pasaron a ${sobreDe(a).nombre}.`);
+      };
+    });
+}
+
+// Crear o editar una meta. Cada meta tiene su tarjeta de ahorro con el aporte del mes.
+function abrirMeta(meta = null) {
+  const editando = !!meta?.id;
+  const m = { nombre: meta?.nombre || "", objetivo: meta?.objetivo || 0, ahorrado: meta?.ahorrado || 0, fecha: meta?.fecha_objetivo?.slice(0, 7) || "", aporte: meta?.aporte_mensual || 0 };
+  abrirHoja(`
+    <h2>${editando ? "Editar meta" : "Nueva meta"}</h2>
+    <div class="campo"><label for="me-nombre">¿Para qué?</label><input id="me-nombre" value="${esc(m.nombre)}" placeholder="Ej: Moto, viaje, celular" autocomplete="off"></div>
+    <div class="fila">
+      ${campoMonto("me-obj", "¿Cuánto cuesta?", m.objetivo)}
+      ${editando ? "" : campoMonto("me-ya", "¿Ya tienes algo?", m.ahorrado)}
+    </div>
+    <div class="campo"><label for="me-fecha">¿Para cuándo? <span class="sub">(opcional)</span></label><input id="me-fecha" type="month" value="${esc(m.fecha)}"></div>
+    ${campoMonto("me-aporte", "¿Cuánto le metes al mes?", m.aporte, "Sale de lo que te entra, como una tarjeta más.")}
+    <div class="aviso-error" id="me-error" hidden></div>
+    <div class="acciones">
+      <button class="boton" id="me-ok">${editando ? "Guardar" : "Crear meta"}</button>
+      ${editando ? `<button class="boton peligro" id="me-borrar">Borrar meta</button>` : ""}
+      <button class="boton texto" data-cerrar>Cancelar</button>
+    </div>`,
+    (hoja) => {
+      const $ = (id) => hoja.querySelector("#" + id);
+      ["me-obj", "me-ya", "me-aporte"].forEach((id) => $(id) && formatearAlSalir(hoja, id));
+      const sugerir = () => {
+        const obj = leerMonto($("me-obj").value), ya = $("me-ya") ? leerMonto($("me-ya").value) : m.ahorrado, f = $("me-fecha").value;
+        const ayuda = $("me-aporte-ayuda");
+        if (obj && f) {
+          const [a, mes] = f.split("-").map(Number), hoy = new Date();
+          const meses = Math.max(1, (a - hoy.getFullYear()) * 12 + (mes - 1 - hoy.getMonth()));
+          ayuda.textContent = `Para llegar a tiempo necesitas ${pesos(Math.ceil((obj - ya) / meses / 1000) * 1000)} al mes.`;
+        } else ayuda.textContent = "Sale de lo que te entra, como una tarjeta más.";
+      };
+      ["me-obj", "me-ya", "me-fecha"].forEach((id) => $(id) && $(id).addEventListener("input", sugerir));
+      sugerir();
+      $("me-ok").onclick = async (e) => {
+        const nombre = $("me-nombre").value.trim(), objetivo = leerMonto($("me-obj").value), aporte = leerMonto($("me-aporte").value);
+        const ya = $("me-ya") ? leerMonto($("me-ya").value) : 0, fecha = $("me-fecha").value;
+        const falta = !nombre ? "Ponle nombre a la meta." : !objetivo ? "Escribe cuánto cuesta." : "";
+        if (falta) { $("me-error").textContent = falta; $("me-error").hidden = false; return; }
+        e.currentTarget.disabled = true;
+        let error;
+        if (editando) {
+          ({ error } = await sb.from("metas").update({ nombre, objetivo, aporte_mensual: aporte, fecha_objetivo: fecha ? fecha + "-01" : null }).eq("id", meta.id));
+          if (!error && meta.sobre_id) ({ error } = await sb.from("sobres").update({ nombre, presupuesto: aporte }).eq("id", meta.sobre_id));
+        } else {
+          const usados = new Set(estado.sobres.map((x) => x.color));
+          const color = COLORES_META.find((c) => !usados.has(c)) || COLORES_META[0];
+          const { data: sobre, error: e1 } = await sb.from("sobres").insert({ nombre, tipo: "ahorro", color, presupuesto: aporte, orden: 50 + estado.sobres.length }).select().single();
+          error = e1;
+          if (!error) ({ error } = await sb.from("metas").insert({ nombre, objetivo, ahorrado: ya, aporte_mensual: aporte, fecha_objetivo: fecha ? fecha + "-01" : null, sobre_id: sobre.id }));
+        }
+        if (error) { $("me-error").textContent = "No se pudo guardar. Revisa el internet."; $("me-error").hidden = false; e.currentTarget.disabled = false; return; }
+        await cargarTodo();
+        cerrarHoja();
+        estado.vista = "metas";
+        pintarApp();
+        toast(editando ? "Meta guardada" : `Meta creada. Ya tienes su tarjeta en la billetera.`);
+      };
+      const borrar = $("me-borrar");
+      if (borrar) borrar.onclick = async () => {
+        if (!borrar.dataset.seguro) { borrar.dataset.seguro = "1"; borrar.textContent = meta.ahorrado ? `Se borra con lo ahorrado (${pesos(meta.ahorrado)}). Toca otra vez` : "¿Seguro? Toca otra vez"; return; }
+        borrar.disabled = true;
+        await sb.from("metas").delete().eq("id", meta.id);
+        if (meta.sobre_id) await sb.from("sobres").update({ archivado: true }).eq("id", meta.sobre_id);
+        await cargarTodo();
+        cerrarHoja();
+        pintarApp();
+        toast("Meta borrada");
+      };
+    });
+}
+
+/* ---------- Avisos en el celular ---------- */
+
+const AVISOS_URL = "https://nuotkljmwojymfcodgph.supabase.co/functions/v1/luka-avisos";
+const esIphone = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const instalada = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+
+function base64AUint8(b64) {
+  const s = atob((b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+
+async function estadoAvisos() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return esIphone && !instalada ? "instalar" : "no-soporta";
+  if (Notification.permission === "denied") return "bloqueados";
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  return sub ? "activos" : "apagados";
+}
+
+async function activarAvisos() {
+  const permiso = await Notification.requestPermission();
+  if (permiso !== "granted") { toast("Sin permiso no te puedo avisar. Actívalo en los ajustes del navegador."); return false; }
+  const { publica } = await (await fetch(AVISOS_URL)).json();
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64AUint8(publica) });
+  const j = sub.toJSON();
+  const { error } = await sb.from("suscripciones").upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }, { onConflict: "endpoint" });
+  if (error) { toast("No pude guardar el celular para los avisos."); return false; }
+  return true;
+}
+
+async function apagarAvisos() {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) { await sb.from("suscripciones").delete().eq("endpoint", sub.endpoint); await sub.unsubscribe(); }
+}
+
+async function pintarAvisos() {
+  const caja = document.getElementById("caja-avisos");
+  if (!caja) return;
+  const est = await estadoAvisos();
+  const p = estado.perfil;
+  const textos = {
+    instalar: "En iPhone los avisos solo funcionan con Luka instalada: toca Compartir y luego «Agregar a inicio». Después abre Luka desde el ícono y vuelve aquí.",
+    "no-soporta": "Este navegador no deja recibir avisos. Prueba con Chrome en Android o instalando Luka en el iPhone.",
+    bloqueados: "Bloqueaste los avisos de Luka. Actívalos en los ajustes del navegador para este sitio.",
+  };
+  caja.innerHTML = textos[est] ? `<p class="sub">${textos[est]}</p>` : `
+    <button class="boton ${est === "activos" ? "claro" : ""}" id="interruptor-avisos">${est === "activos" ? "Apagar avisos en este celular" : "Activar avisos en este celular"}</button>
+    ${est === "activos" ? `
+      ${[["aviso_manana", "Cuánto puedo gastar, a las 7 a. m."], ["aviso_noche", "Recordarme anotar, a las 9 p. m."], ["aviso_sobres", "Cuando una tarjeta se esté acabando"]].map(([k, t]) => `
+        <label class="interruptor"><span>${t}</span><input type="checkbox" data-pref="${k}" ${p[k] ? "checked" : ""}></label>`).join("")}
+      <button class="boton texto" id="prueba-aviso">Mandarme un aviso de prueba</button>` : ""}`;
+  const b = document.getElementById("interruptor-avisos");
+  if (b) b.onclick = async () => {
+    b.disabled = true;
+    if (est === "activos") { await apagarAvisos(); toast("Avisos apagados"); }
+    else if (await activarAvisos()) toast("¡Listo! Te voy a avisar.");
+    pintarAvisos();
+  };
+  caja.querySelectorAll("[data-pref]").forEach((c) => (c.onchange = async () => {
+    const { error } = await sb.from("perfiles").update({ [c.dataset.pref]: c.checked }).eq("id", estado.usuario.id);
+    if (error) { c.checked = !c.checked; toast("No se pudo guardar."); return; }
+    estado.perfil[c.dataset.pref] = c.checked;
+  }));
+  const prueba = document.getElementById("prueba-aviso");
+  if (prueba) prueba.onclick = async () => {
+    prueba.disabled = true;
+    const { data: { session } } = await sb.auth.getSession();
+    const r = await fetch(AVISOS_URL, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ tipo: "prueba" }) }).then((x) => x.json()).catch(() => ({}));
+    toast(r.enviados ? "Aviso enviado. Debe llegarte en segundos." : "No pude mandar el aviso. Apaga y vuelve a activar los avisos.");
+    prueba.disabled = false;
   };
 }
 
@@ -1343,6 +1660,8 @@ function vistaYo() {
       <div class="yo-dato"><span>${p.frecuencia === "variable" ? "Al mes" : "Por pago"}</span><span class="num">${pesos(p.ingreso_por_pago)}</span></div>
       <div class="yo-dato"><span>Gastos fijos</span><span>${estado.fijos.length}</span></div>
     </div>
+    <h3 class="titulo-lista">Avisos</h3>
+    <div id="caja-avisos" class="caja-avisos"><p class="sub">Revisando…</p></div>
     <button class="boton" id="ir-ajustar">Ajustar mis tarjetas</button>
     <button class="boton claro" id="rehacer">Volver a hacer la bienvenida</button>
     <button class="boton texto" id="salir">Cerrar sesión</button>

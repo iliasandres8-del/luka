@@ -331,3 +331,20 @@ body.con-hoja { overflow: hidden; }
 .redactar .mas { background: var(--linea); color: var(--tinta); }
 .redactar .enviar { background: var(--verde); color: #fff; }
 .redactar .enviar:disabled { opacity: .4; }
+
+/* Metas */
+.meta { background: var(--hoja); border: 1px solid var(--linea); border-left: 6px solid var(--c); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+.meta-cab { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.meta-cab h2 { font-size: 1.25rem; }
+.meta-cab .num { color: var(--suave); font-weight: 700; }
+.meta-cifra { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.meta-cifra b { font-family: var(--display); font-size: 1.7rem; font-weight: 800; letter-spacing: -.02em; }
+.meta-barra { height: 10px; border-radius: 6px; background: var(--linea); overflow: hidden; }
+.meta-barra i { display: block; height: 100%; border-radius: 6px; background: var(--c); transition: width .4s ease; }
+.por-abonar { font-size: .88rem; background: var(--nota); color: var(--nota-tinta); padding: 8px 10px; border-radius: 10px; }
+.boton.icono { flex: 0 0 52px; padding: 0; font-size: 1.1rem; }
+
+/* Avisos */
+.caja-avisos { display: flex; flex-direction: column; gap: 10px; }
+.interruptor { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 48px; padding: 8px 14px; background: var(--hoja); border: 1px solid var(--linea); border-radius: 12px; }
+.interruptor input { width: 22px; height: 22px; accent-color: var(--verde); flex: none; }
