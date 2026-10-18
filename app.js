@@ -1,5 +1,5 @@
-// Luka: plata en sobres, con alguien que te avisa.
-// Parte 1: cuentas, bienvenida (ingreso, fijos, meta y reparto en sobres) e inicio con la billetera.
+// Luka: tu plata real, con alguien que te avisa.
+// Saldo = lo que entra − lo que gastas − lo que ahorras. Las tarjetas son las categorías de gasto.
 
 const SUPABASE_URL = "https://nuotkljmwojymfcodgph.supabase.co";
 const SUPABASE_KEY = "sb_publishable_L1ZV86fVmwvaHigXBEjADw_b67Tws9L";
@@ -7,19 +7,29 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const app = document.getElementById("app");
 
-// Colores de cada sobre: fondo y letra
-const COLORES = {
-  Comida: ["#e2b13c", "#2a1e05"],
-  Transporte: ["#3f8f6b", "#f2fff8"],
-  Salidas: ["#c4553b", "#fff3ef"],
-  Ahorro: ["#2f4fb5", "#eef2ff"],
-  Fijos: ["#8a968f", "#ffffff"],
-  Otros: ["#7a5bb5", "#f6f1ff"],
-};
-const letraDe = (fondo) => (Object.values(COLORES).find(([c]) => c === fondo) || [fondo, "#ffffff"])[1];
-
-// Cuántos pagos hay en un mes según la frecuencia
+// Tarjetas con las que arranca cada persona, con opciones rápidas de descripción
+const CATEGORIAS_BASE = [
+  { nombre: "Comida", color: "#e2b13c", opciones: ["Almuerzo", "Desayuno", "Domicilio", "Mercado", "Snack", "Cena"] },
+  { nombre: "Transporte", color: "#3f8f6b", opciones: ["Bus", "Gasolina", "Taxi", "Uber o DiDi", "Moto", "Parqueadero"] },
+  { nombre: "Salidas", color: "#c4553b", opciones: ["Plan con amigos", "Salida con la novia", "Cine", "Rumba", "Comida afuera", "Partido"] },
+  { nombre: "Compras", color: "#7a5bb5", opciones: ["Ropa", "Aseo personal", "Tecnología", "Regalo", "Cosas de la casa"] },
+  { nombre: "Estudio", color: "#2a8fa8", opciones: ["Fotocopias", "Libros", "Útiles", "Curso", "Matrícula"] },
+  { nombre: "Salud", color: "#b54a7f", opciones: ["Droguería", "Cita médica", "Gimnasio"] },
+  { nombre: "Suscripciones", color: "#d9822b", opciones: ["Netflix", "Spotify", "Plan celular", "Internet", "Apps"] },
+  { nombre: "Otros", color: "#5d7a2f", opciones: [] },
+];
+const COLOR_FIJOS = "#8a968f";
+const COLORES_EXTRA = ["#1f8a8a", "#9a4fb5", "#b5762f", "#3f6fb5", "#6b8f2f", "#a8553f"];
+const OPCIONES_INGRESO = ["Quincena", "Pago del trabajo", "Venta", "Mesada", "Regalo"];
+const METODOS = ["Nequi", "Efectivo", "Tarjeta", "Daviplata", "Transferencia"];
 const PAGOS_AL_MES = { mensual: 1, quincenal: 2, semanal: 52 / 12, variable: 1 };
+
+// Letra clara u oscura según el color de la tarjeta
+function letraDe(fondo = "#888888") {
+  const h = fondo.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.55 ? "#1f1a0a" : "#ffffff";
+}
 
 const estado = {
   usuario: null,
@@ -27,16 +37,22 @@ const estado = {
   sobres: [],
   metas: [],
   fijos: [],
+  deudas: [],
+  movs: [],
   movimientos: [],
+  saldo: 0,
   vista: "inicio",
+  periodo: "hoy",
   bienvenida: null,
 };
 
 /* ---------- Utilidades ---------- */
 
-const pesos = (n) => "$" + Math.round(n || 0).toLocaleString("es-CO");
+const pesos = (n) => (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n || 0)).toLocaleString("es-CO");
+const corto = (n) => (n >= 1e6 ? (Math.round(n / 1e5) / 10).toLocaleString("es-CO") + "M" : n >= 1000 ? Math.round(n / 1000) + "k" : String(Math.round(n)));
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const redondear = (n) => Math.max(0, Math.round(n / 1000) * 1000);
+const suma = (lista) => lista.reduce((t, m) => t + (m.monto || 0), 0);
 
 // Entiende "480k", "480 mil", "1,5 millones", "1.2m", "480.000" o "480000"
 function leerMonto(texto) {
@@ -61,48 +77,115 @@ function toast(msj) {
 
 const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const DIAS_PLURAL = ["domingos", "lunes", "martes", "miércoles", "jueves", "viernes", "sábados"];
 
-function inicioDeMes(d = new Date()) { return new Date(d.getFullYear(), d.getMonth(), 1); }
-function diasQuedan(d = new Date()) {
-  const fin = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  return fin - d.getDate() + 1; // incluye hoy
+const hoy0 = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); };
+const sumaDias = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const inicioDeMes = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), 1);
+const lunesDe = (d) => sumaDias(new Date(d.getFullYear(), d.getMonth(), d.getDate()), -((d.getDay() + 6) % 7));
+function fechaLocal(d) {
+  const z = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
 }
+const cuenta = (m) => m.origen !== "ajuste"; // los ajustes de saldo no cuentan en los resúmenes
+const entre = (desde, hasta) => (m) => { const f = new Date(m.fecha); return f >= desde && f < hasta; };
+const gastosEntre = (desde, hasta) => estado.movs.filter((m) => m.tipo === "gasto" && cuenta(m) && entre(desde, hasta)(m));
+const ingresosEntre = (desde, hasta) => estado.movs.filter((m) => m.tipo === "ingreso" && cuenta(m) && entre(desde, hasta)(m));
+const pct = (a, b) => (b ? Math.round(((a - b) / b) * 100) : 0);
 
 /* ---------- Datos ---------- */
 
 async function cargarTodo() {
   const id = estado.usuario.id;
-  const desde = inicioDeMes().toISOString();
-  const [p, s, m, f, mv] = await Promise.all([
+  const desde = new Date(Math.min(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1), sumaDias(hoy0(), -56)));
+  const [p, s, m, f, d, mv, sal] = await Promise.all([
     sb.from("perfiles").select("*").eq("id", id).maybeSingle(),
-    sb.from("sobres").select("*").eq("archivado", false).order("orden"),
+    sb.from("sobres").select("*").eq("archivado", false).neq("tipo", "ahorro").order("orden"),
     sb.from("metas").select("*").order("creado"),
     sb.from("gastos_fijos").select("*").eq("activo", true).order("dia_mes", { nullsFirst: false }),
-    sb.from("movimientos").select("*").gte("fecha", desde).order("fecha", { ascending: false }),
+    sb.from("deudas").select("*").order("fecha_limite", { nullsFirst: false }),
+    sb.from("movimientos").select("*").gte("fecha", desde.toISOString()).order("fecha", { ascending: false }),
+    sb.rpc("mi_saldo"),
   ]);
-  const error = p.error || s.error || m.error || f.error || mv.error;
+  const error = p.error || s.error || m.error || f.error || d.error || mv.error || sal.error;
   if (error) throw error;
   estado.perfil = p.data;
   estado.sobres = s.data;
   estado.metas = m.data;
   estado.fijos = f.data;
-  estado.movimientos = mv.data;
+  estado.deudas = d.data;
+  estado.movs = mv.data;
+  estado.desde = desde;
+  estado.movimientos = mv.data.filter(entre(inicioDeMes(), new Date(2999, 0)));
+  estado.saldo = Number(sal.data) || 0;
 }
 
-// Lo que queda en cada sobre este mes: presupuesto − gastos + lo que le pasaron − lo que sacaron
-function saldos() {
-  const r = {};
-  for (const s of estado.sobres) r[s.id] = s.presupuesto;
-  for (const m of estado.movimientos) {
-    if ((m.tipo === "gasto" || m.tipo === "abono") && m.sobre_id in r) r[m.sobre_id] -= m.monto;
-    if (m.tipo === "retiro" && m.sobre_destino_id in r) r[m.sobre_destino_id] += m.monto;
-    if (m.tipo === "traslado") {
-      if (m.sobre_id in r) r[m.sobre_id] -= m.monto;
-      if (m.sobre_destino_id in r) r[m.sobre_destino_id] += m.monto;
-    }
-  }
-  return r;
+const sobreDe = (id) => estado.sobres.find((s) => s.id === id);
+const categorias = () => estado.sobres.filter((s) => s.tipo === "gasto" || s.tipo === "fijo");
+const metaPorId = (id) => estado.metas.find((m) => m.id === id);
+const metasActivas = () => estado.metas.filter((m) => !m.lograda);
+const opcionesDe = (cat) => CATEGORIAS_BASE.find((c) => c.nombre === cat?.nombre)?.opciones || (cat?.tipo === "fijo" ? estado.fijos.map((f) => f.nombre) : []);
+
+// Descripciones que la persona más usa en una tarjeta, más las de siempre
+function descripcionesDe(cat) {
+  const veces = {};
+  for (const m of estado.movs) if (m.sobre_id === cat.id && m.descripcion) veces[m.descripcion] = (veces[m.descripcion] || 0) + 1;
+  const usadas = Object.entries(veces).sort((a, b) => b[1] - a[1]).map(([d]) => d);
+  return [...new Set([...usadas.slice(0, 4), ...opcionesDe(cat)])].slice(0, 8);
 }
+
+/* ---------- Cuentas del día ---------- */
+
+// Próximo día de pago según cada cuánto le pagan
+function proximoPago() {
+  const p = estado.perfil, h = hoy0();
+  const dias = (p.dias_pago || []).filter((x) => x != null);
+  if (p.frecuencia === "semanal" && dias.length) {
+    let d = sumaDias(h, 1);
+    while (d.getDay() !== dias[0] % 7) d = sumaDias(d, 1);
+    return d;
+  }
+  if ((p.frecuencia === "mensual" || p.frecuencia === "quincenal") && dias.length) {
+    const candidatos = [];
+    for (let k = 0; k < 2; k++) for (const dia of dias) {
+      const fin = new Date(h.getFullYear(), h.getMonth() + k + 1, 0).getDate();
+      candidatos.push(new Date(h.getFullYear(), h.getMonth() + k, Math.min(dia, fin)));
+    }
+    return candidatos.filter((d) => d > h).sort((a, b) => a - b)[0];
+  }
+  return new Date(h.getFullYear(), h.getMonth() + 1, 1);
+}
+
+// Fecha del próximo cobro de un gasto fijo (día del mes)
+function proximoFijo(dia) {
+  const h = hoy0();
+  const fin = new Date(h.getFullYear(), h.getMonth() + 1, 0).getDate();
+  let d = new Date(h.getFullYear(), h.getMonth(), Math.min(dia, fin));
+  if (d < h) { const fin2 = new Date(h.getFullYear(), h.getMonth() + 2, 0).getDate(); d = new Date(h.getFullYear(), h.getMonth() + 1, Math.min(dia, fin2)); }
+  return d;
+}
+
+function fijosPagados() {
+  return new Set(estado.movimientos.filter((m) => m.tipo === "gasto").map((m) => m.descripcion));
+}
+
+// Cuánto puede gastar hoy: saldo real repartido hasta el próximo pago, sin los fijos que vienen antes
+function planDelDia() {
+  const h = hoy0(), pago = proximoPago();
+  const dias = Math.max(1, Math.round((pago - h) / 864e5));
+  const pagados = fijosPagados();
+  const fijosAntes = estado.fijos.filter((f) => f.dia_mes && !pagados.has(f.nombre) && proximoFijo(f.dia_mes) < pago);
+  const fijosPend = fijosAntes.reduce((t, f) => t + f.monto, 0);
+  const gastadoHoy = suma(gastosEntre(h, sumaDias(h, 1)));
+  const base = estado.saldo + gastadoHoy - fijosPend;
+  const porDia = Math.max(0, Math.floor(base / dias / 50) * 50);
+  return { pago, dias, fijosAntes, fijosPend, gastadoHoy, porDia, quedaHoy: porDia - gastadoHoy };
+}
+
+const cuandoTxt = (d) => {
+  const n = Math.round((d - hoy0()) / 864e5);
+  return n <= 0 ? "hoy" : n === 1 ? "mañana" : `en ${n} días`;
+};
 
 /* ---------- Arranque y sesión ---------- */
 
@@ -135,7 +218,7 @@ function pintarEntrar(modo = "entrar", mensaje = "") {
   <section class="pantalla">
     <div class="entrar-cabeza">
       <span class="marca">Luka</span>
-      <h1>Tu plata en sobres, con alguien que te avisa.</h1>
+      <h1>Tu plata clara, con alguien que te avisa.</h1>
     </div>
     <div class="pestanas" role="tablist">
       <button role="tab" aria-selected="${!crear}" data-modo="entrar">Entrar</button>
@@ -222,16 +305,20 @@ function pintarNuevaClave(mensaje = "") {
 
 /* ---------- Bienvenida: 4 pasos ---------- */
 
+const DIAS_DEFECTO = { mensual: [30], quincenal: [15, 30], semanal: [5], variable: [] };
+const SUGERIDOS_FIJOS = ["Arriendo", "Plan celular", "Cuota moto", "Internet", "Servicios", "Netflix", "Spotify", "Gimnasio"];
+
 function empezarBienvenida() {
   estado.bienvenida = {
     paso: 1,
     nombre: estado.perfil?.nombre || estado.usuario.user_metadata?.nombre || "",
-    frecuencia: estado.perfil?.frecuencia || "quincenal",
-    ingreso: estado.perfil?.ingreso_por_pago || 0,
+    frecuencia: "quincenal",
+    ingreso: 0,
+    dias: [15, 30],
     fijos: [],
-    meta: { nombre: "", objetivo: 0, ahorrado: 0, fecha: "" },
+    meta: { nombre: "", objetivo: 0, ahorrado: 0, fecha: "", aporte: 0 },
     sinMeta: false,
-    reparto: null,
+    saldo: 0,
   };
   pintarBienvenida();
 }
@@ -245,15 +332,24 @@ function puntos(paso) {
 
 function pintarBienvenida() {
   const b = estado.bienvenida;
-  const pasos = { 1: pasoIngreso, 2: pasoFijos, 3: pasoMeta, 4: pasoReparto };
-  pasos[b.paso](b);
+  ({ 1: pasoPago, 2: pasoFijos, 3: pasoMeta, 4: pasoSaldo })[b.paso](b);
   window.scrollTo(0, 0);
 }
 
-function pasoIngreso(b) {
+// Selector de días de pago según la frecuencia
+function selectorDias(b) {
+  if (b.frecuencia === "variable") return "";
+  if (b.frecuencia === "semanal") {
+    return `<div class="campo"><span class="etiqueta">¿Qué día de la semana?</span><div class="chips">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button type="button" class="chip suave" data-dia-semana="${d}" aria-pressed="${b.dias[0] === d}">${DIAS[d][0].toUpperCase() + DIAS[d].slice(1, 3)}</button>`).join("")}</div></div>`;
+  }
+  const textos = b.dias.map((d, i) => `<input class="dia-pago" data-i="${i}" inputmode="numeric" value="${d}" aria-label="Día de pago ${i + 1}">`).join(b.frecuencia === "quincenal" ? `<span>y</span>` : "");
+  return `<div class="campo"><span class="etiqueta">${b.frecuencia === "quincenal" ? "¿Qué días te pagan?" : "¿Qué día te pagan?"}</span><div class="fila-dias">${textos}<span class="sub">de cada mes</span></div></div>`;
+}
+
+function pasoPago(b) {
   const frecuencias = [
-    ["mensual", "Cada mes", "Te pagan una vez al mes"],
     ["quincenal", "Cada quincena", "Dos pagos al mes"],
+    ["mensual", "Cada mes", "Un pago al mes"],
     ["semanal", "Cada semana", "Te pagan por semana"],
     ["variable", "Varía", "Independiente o por días"],
   ];
@@ -264,32 +360,26 @@ function pasoIngreso(b) {
     <div class="opciones">
       ${frecuencias.map(([v, t, s]) => `<button type="button" class="opcion" aria-pressed="${b.frecuencia === v}" data-frec="${v}"><span>${t}<small>${s}</small></span><span class="bolita"></span></button>`).join("")}
     </div>
+    ${selectorDias(b)}
     <div class="campo">
       <label for="ingreso">${b.frecuencia === "variable" ? "¿Cuánto te entra al mes, más o menos?" : "¿Cuánto te llega en cada pago, más o menos?"}</label>
       <input id="ingreso" class="grande" inputmode="decimal" placeholder="Ej: 480.000 o 480k" value="${b.ingreso ? pesos(b.ingreso) : ""}">
-      <span class="ayuda" id="ayuda-ingreso">${b.ingreso && b.frecuencia !== "mensual" && b.frecuencia !== "variable" ? "Al mes son " + pesos(ingresoMensual(b)) : "Puedes escribir 480k o 1,2 millones."}</span>
+      <span class="ayuda">Puedes escribir 480k o 1,2 millones.</span>
     </div>
-    <div class="acciones">
-      ${puntos(1)}
-      <button class="boton" id="seguir">Seguir</button>
-    </div>
+    <div class="acciones">${puntos(1)}<button class="boton" id="seguir">Seguir</button></div>
   </section>`;
 
-  app.querySelectorAll("[data-frec]").forEach((el) => (el.onclick = () => { b.frecuencia = el.dataset.frec; b.ingreso = leerMonto(document.getElementById("ingreso").value); pasoIngreso(b); }));
   const input = document.getElementById("ingreso");
-  input.oninput = () => {
-    b.ingreso = leerMonto(input.value);
-    const ayuda = document.getElementById("ayuda-ingreso");
-    ayuda.textContent = b.ingreso ? (b.frecuencia === "mensual" || b.frecuencia === "variable" ? pesos(b.ingreso) + " al mes" : pesos(b.ingreso) + " por pago · al mes son " + pesos(ingresoMensual(b))) : "Puedes escribir 480k o 1,2 millones.";
-  };
-  input.onblur = () => { if (b.ingreso) input.value = pesos(b.ingreso); };
+  const leer = () => { b.ingreso = leerMonto(input.value); app.querySelectorAll(".dia-pago").forEach((el) => (b.dias[+el.dataset.i] = Math.min(31, Math.max(1, parseInt(el.value, 10) || 1)))); };
+  app.querySelectorAll("[data-frec]").forEach((el) => (el.onclick = () => { leer(); b.frecuencia = el.dataset.frec; b.dias = [...DIAS_DEFECTO[b.frecuencia]]; pasoPago(b); }));
+  app.querySelectorAll("[data-dia-semana]").forEach((el) => (el.onclick = () => { leer(); b.dias = [+el.dataset.diaSemana]; pasoPago(b); }));
+  input.onblur = () => { b.ingreso = leerMonto(input.value); if (b.ingreso) input.value = pesos(b.ingreso); };
   document.getElementById("seguir").onclick = () => {
+    leer();
     if (!b.ingreso) { toast("Escribe cuánto te entra, aunque sea un aproximado."); input.focus(); return; }
     b.paso = 2; pintarBienvenida();
   };
 }
-
-const SUGERIDOS_FIJOS = ["Arriendo", "Plan celular", "Cuota moto", "Internet", "Servicios", "Netflix", "Spotify", "Gimnasio"];
 
 function pasoFijos(b) {
   const usados = new Set(b.fijos.map((f) => f.nombre));
@@ -297,7 +387,7 @@ function pasoFijos(b) {
   <section class="pantalla">
     <span class="paso">Paso 2 de 4</span>
     <h1>¿Qué pagas fijo todos los meses?</h1>
-    <p class="sub">Arriendo, plan del celular, cuotas, suscripciones. Si no pagas nada fijo, sigue.</p>
+    <p class="sub">Arriendo, plan del celular, cuotas, suscripciones. Luka los aparta antes de decirte cuánto puedes gastar.</p>
     <div class="chips">${SUGERIDOS_FIJOS.filter((n) => !usados.has(n)).map((n) => `<button type="button" class="chip" data-sug="${n}">+ ${n}</button>`).join("")}<button type="button" class="chip" data-sug="">+ Otro</button></div>
     <div class="lista-fijos">
       ${b.fijos.map((f, i) => `
@@ -344,18 +434,21 @@ function pasoFijos(b) {
 
 function pasoMeta(b) {
   const m = b.meta;
+  const libre = Math.max(0, ingresoMensual(b) - totalFijos(b));
+  if (!m.aporte) m.aporte = redondear(libre * 0.15);
   app.innerHTML = `
   <section class="pantalla">
     <span class="paso">Paso 3 de 4</span>
     <h1>¿Para qué quieres ahorrar?</h1>
-    <p class="sub">Una moto, un viaje, un celular, un fondo para emergencias. Con una meta es más fácil no gastarse todo.</p>
+    <p class="sub">Con una meta es más fácil no gastarse todo.</p>
     <div class="chips">${["Moto", "Viaje", "Celular nuevo", "Emergencias", "Estudio"].map((n) => `<button type="button" class="chip" data-meta="${n}">${n}</button>`).join("")}</div>
     <div class="campo"><label for="meta-nombre">Mi meta</label><input id="meta-nombre" value="${esc(m.nombre)}" placeholder="Ej: Moto"></div>
     <div class="fila">
       <div class="campo"><label for="meta-obj">¿Cuánto cuesta?</label><input id="meta-obj" inputmode="decimal" value="${m.objetivo ? pesos(m.objetivo) : ""}" placeholder="Ej: 4 millones"></div>
       <div class="campo"><label for="meta-ya">¿Ya tienes algo?</label><input id="meta-ya" inputmode="decimal" value="${m.ahorrado ? pesos(m.ahorrado) : ""}" placeholder="$0"></div>
     </div>
-    <div class="campo"><label for="meta-fecha">¿Para cuándo la quieres? <span class="sub">(opcional)</span></label><input id="meta-fecha" type="month" value="${esc(m.fecha)}"></div>
+    <div class="campo"><label for="meta-aporte">¿Cuánto le quieres meter al mes?</label><input id="meta-aporte" inputmode="decimal" value="${m.aporte ? pesos(m.aporte) : ""}" placeholder="$0">
+      <span class="ayuda" id="meta-ayuda"></span></div>
     <div class="acciones">
       ${puntos(3)}
       <button class="boton" id="seguir">Seguir</button>
@@ -368,202 +461,125 @@ function pasoMeta(b) {
     m.nombre = document.getElementById("meta-nombre").value.trim();
     m.objetivo = leerMonto(document.getElementById("meta-obj").value);
     m.ahorrado = leerMonto(document.getElementById("meta-ya").value);
-    m.fecha = document.getElementById("meta-fecha").value;
+    m.aporte = leerMonto(document.getElementById("meta-aporte").value);
   };
+  const ayuda = () => {
+    leer();
+    const falta = m.objetivo - m.ahorrado;
+    const el = document.getElementById("meta-ayuda");
+    if (falta > 0 && m.aporte > 0) { const d = new Date(); d.setMonth(d.getMonth() + Math.ceil(falta / m.aporte)); el.textContent = `Así la logras en ${MESES[d.getMonth()]} de ${d.getFullYear()}.`; }
+    else el.textContent = `Te recomiendo guardar el 15 % de lo que te sobra: ${pesos(redondear(libre * 0.15))}.`;
+  };
+  ["meta-obj", "meta-ya", "meta-aporte"].forEach((id) => {
+    const el = document.getElementById(id);
+    el.addEventListener("input", ayuda);
+    el.onblur = () => { const n = leerMonto(el.value); if (n) el.value = pesos(n); };
+  });
+  ayuda();
   app.querySelectorAll("[data-meta]").forEach((el) => (el.onclick = () => { leer(); m.nombre = el.dataset.meta; pasoMeta(b); document.getElementById("meta-obj").focus(); }));
-  ["meta-obj", "meta-ya"].forEach((id) => { const el = document.getElementById(id); el.onblur = () => { const n = leerMonto(el.value); if (n) el.value = pesos(n); }; });
   document.getElementById("atras").onclick = () => { leer(); b.paso = 2; pintarBienvenida(); };
-  document.getElementById("sin-meta").onclick = () => { leer(); b.sinMeta = true; b.reparto = null; b.paso = 4; pintarBienvenida(); };
+  document.getElementById("sin-meta").onclick = () => { leer(); b.sinMeta = true; b.paso = 4; pintarBienvenida(); };
   document.getElementById("seguir").onclick = () => {
     leer();
     if (!m.nombre || !m.objetivo) { toast("Ponle nombre y cuánto cuesta, o toca «Todavía no tengo meta»."); return; }
     if (m.ahorrado >= m.objetivo) { toast("Ya tienes lo de esa meta. ¡Ponte una más grande!"); return; }
-    b.sinMeta = false; b.reparto = null; b.paso = 4; pintarBienvenida();
+    b.sinMeta = false; b.paso = 4; pintarBienvenida();
   };
 }
 
-// Reparto que propone Luka: primero ahorro, y lo demás entre comida, transporte, salidas y otros
-function proponerReparto(b) {
-  const libre = Math.max(0, ingresoMensual(b) - totalFijos(b));
-  let ahorro = redondear(libre * (b.sinMeta ? 0.10 : 0.20));
-  if (!b.sinMeta && b.meta.fecha) {
-    const [a, mes] = b.meta.fecha.split("-").map(Number);
-    const hoy = new Date();
-    const meses = Math.max(1, (a - hoy.getFullYear()) * 12 + (mes - 1 - hoy.getMonth()));
-    const necesita = redondear((b.meta.objetivo - b.meta.ahorrado) / meses);
-    ahorro = Math.min(redondear(libre * 0.4), Math.max(ahorro, necesita));
-  }
-  const resto = libre - ahorro;
-  const r = { Comida: redondear(resto * 0.45), Transporte: redondear(resto * 0.2), Salidas: redondear(resto * 0.2) };
-  r.Otros = Math.max(0, resto - r.Comida - r.Transporte - r.Salidas);
-  r.Ahorro = ahorro;
-  return r;
-}
-
-function proyeccionMeta(b, ahorroMes) {
-  if (b.sinMeta) return "";
-  const falta = b.meta.objetivo - b.meta.ahorrado;
-  if (ahorroMes <= 0) return `Sin ahorrar nada al mes no llegas a tu meta «${esc(b.meta.nombre)}».`;
-  const meses = Math.ceil(falta / ahorroMes);
-  const d = new Date(); d.setMonth(d.getMonth() + meses);
-  let texto = `Ahorrando ${pesos(ahorroMes)} al mes, tu meta «${esc(b.meta.nombre)}» se cumple en <strong>${MESES[d.getMonth()]} de ${d.getFullYear()}</strong>`;
-  if (b.meta.fecha) {
-    const [a, m] = b.meta.fecha.split("-").map(Number);
-    const quiere = new Date(a, m - 1, 28);
-    texto += d <= quiere ? ", a tiempo para lo que querías." : `, después de lo que querías (${MESES[m - 1]} de ${a}). Súbele al ahorro o mueve la fecha.`;
-  } else texto += ".";
-  return texto;
-}
-
-function pasoReparto(b) {
-  if (!b.reparto) b.reparto = proponerReparto(b);
-  const libre = Math.max(0, ingresoMensual(b) - totalFijos(b));
-  const nombres = ["Comida", "Transporte", "Salidas", "Otros", "Ahorro"];
-  const etiqueta = (n) => (n === "Ahorro" && !b.sinMeta ? `Ahorro · ${esc(b.meta.nombre)}` : n);
-  const fijosMal = totalFijos(b) > ingresoMensual(b);
-
+function pasoSaldo(b) {
   app.innerHTML = `
   <section class="pantalla">
     <span class="paso">Paso 4 de 4</span>
-    <h1>Así te propongo repartir ${pesos(libre)} al mes</h1>
-    <p class="sub">Es lo que te queda después de los fijos (${pesos(totalFijos(b))}). Mueve las barras si quieres otra cosa.</p>
-    ${fijosMal ? `<div class="aviso-error">Tus gastos fijos son más que lo que te entra. Revisa el paso 2 o el ingreso del paso 1.</div>` : ""}
-    <div class="reparto">
-      ${nombres.map((n) => `
-      <div class="sobre-reparto" style="--c:${COLORES[n][0]}">
-        <div class="cab"><span><i style="background:${COLORES[n][0]}"></i>${etiqueta(n)}</span><span class="num" id="v-${n}">${pesos(b.reparto[n])}</span></div>
-        <input type="range" min="0" max="${Math.max(libre, 1000)}" step="1000" value="${b.reparto[n]}" data-sobre="${n}" aria-label="${n}">
-      </div>`).join("")}
-    </div>
-    <div class="saldo-reparto" id="saldo"></div>
-    <div class="nota" id="proyeccion" ${b.sinMeta ? "hidden" : ""}></div>
+    <h1>¿Cuánta plata tienes hoy?</h1>
+    <p class="sub">Suma lo que tienes en Nequi, en el banco y en efectivo. Desde aquí Luka lleva tu saldo real.</p>
+    <div class="campo"><label for="saldo">Tengo en total</label><input id="saldo" class="grande" inputmode="decimal" value="${b.saldo ? pesos(b.saldo) : ""}" placeholder="$0"></div>
     <div class="acciones">
       ${puntos(4)}
-      <button class="boton" id="listo">Me sirve, empezar</button>
-      <button class="boton texto" id="reiniciar">Volver a lo que propuso Luka</button>
+      <button class="boton" id="listo">Empezar</button>
       <button class="boton texto" id="atras">Atrás</button>
     </div>
   </section>`;
-
-  const actualizar = () => {
-    const usado = nombres.reduce((t, n) => t + b.reparto[n], 0);
-    const queda = libre - usado;
-    const saldo = document.getElementById("saldo");
-    saldo.className = "saldo-reparto" + (queda < 0 ? " malo" : "");
-    saldo.innerHTML = queda < 0 ? `<span>Te pasaste</span><span class="num">${pesos(-queda)}</span>` : `<span>${queda ? "Sin repartir (va a Otros)" : "Todo repartido"}</span><span class="num">${pesos(queda)}</span>`;
-    document.getElementById("listo").disabled = queda < 0;
-    document.getElementById("proyeccion").innerHTML = proyeccionMeta(b, b.reparto.Ahorro);
-  };
-  app.querySelectorAll("[data-sobre]").forEach((el) => (el.oninput = () => {
-    b.reparto[el.dataset.sobre] = +el.value;
-    document.getElementById("v-" + el.dataset.sobre).textContent = pesos(+el.value);
-    actualizar();
-  }));
-  actualizar();
-  document.getElementById("reiniciar").onclick = () => { b.reparto = proponerReparto(b); pasoReparto(b); };
-  document.getElementById("atras").onclick = () => { b.paso = 3; pintarBienvenida(); };
-  document.getElementById("listo").onclick = (e) => guardarBienvenida(b, libre, e.currentTarget);
+  const input = document.getElementById("saldo");
+  input.onblur = () => { b.saldo = leerMonto(input.value); if (b.saldo) input.value = pesos(b.saldo); };
+  document.getElementById("atras").onclick = () => { b.saldo = leerMonto(input.value); b.paso = 3; pintarBienvenida(); };
+  document.getElementById("listo").onclick = (e) => { b.saldo = leerMonto(input.value); guardarBienvenida(b, e.currentTarget); };
 }
 
-async function guardarBienvenida(b, libre, boton) {
-  boton.disabled = true; boton.textContent = "Armando tu billetera…";
+async function guardarBienvenida(b, boton) {
+  boton.disabled = true; boton.textContent = "Armando tu Luka…";
   try {
-    const r = { ...b.reparto };
-    const usado = Object.values(r).reduce((t, n) => t + n, 0);
-    r.Otros += Math.max(0, libre - usado);
+    const uid = estado.usuario.id;
+    // Si quedó algo de un intento anterior, se limpia
+    await sb.from("metas").delete().eq("user_id", uid);
+    await sb.from("gastos_fijos").delete().eq("user_id", uid);
+    await sb.from("sobres").delete().eq("user_id", uid);
 
-    // Si ya había empezado antes, se borra lo de la bienvenida anterior
-    await sb.from("metas").delete().eq("user_id", estado.usuario.id);
-    await sb.from("gastos_fijos").delete().eq("user_id", estado.usuario.id);
-    await sb.from("sobres").delete().eq("user_id", estado.usuario.id);
-
-    const orden = ["Comida", "Transporte", "Salidas", "Otros", "Ahorro"];
-    const filas = orden.filter((n) => n !== "Otros" || r.Otros > 0).map((n, i) => ({
-      nombre: n === "Ahorro" && !b.sinMeta ? b.meta.nombre : n,
-      tipo: n === "Ahorro" ? "ahorro" : "gasto",
-      color: COLORES[n][0],
-      presupuesto: r[n],
-      orden: i,
-    }));
-    if (b.fijos.length) filas.push({ nombre: "Fijos", tipo: "fijo", color: COLORES.Fijos[0], presupuesto: totalFijos(b), orden: 99 });
-    const { data: sobres, error: e1 } = await sb.from("sobres").insert(filas).select();
+    const filas = CATEGORIAS_BASE.map((c, i) => ({ nombre: c.nombre, tipo: "gasto", color: c.color, presupuesto: 0, orden: c.nombre === "Otros" ? 20 : i }));
+    if (b.fijos.length) filas.push({ nombre: "Fijos", tipo: "fijo", color: COLOR_FIJOS, presupuesto: 0, orden: 10 });
+    const { error: e1 } = await sb.from("sobres").insert(filas);
     if (e1) throw e1;
-
     if (b.fijos.length) {
       const { error } = await sb.from("gastos_fijos").insert(b.fijos.map((f) => ({ nombre: f.nombre.trim(), monto: f.monto, dia_mes: f.dia || null })));
       if (error) throw error;
     }
     if (!b.sinMeta) {
-      const ahorro = sobres.find((s) => s.tipo === "ahorro");
-      const { error } = await sb.from("metas").insert({
-        nombre: b.meta.nombre, objetivo: b.meta.objetivo, ahorrado: b.meta.ahorrado,
-        fecha_objetivo: b.meta.fecha ? b.meta.fecha + "-01" : null, sobre_id: ahorro?.id, aporte_mensual: ahorro?.presupuesto || 0,
-      });
+      const { error } = await sb.from("metas").insert({ nombre: b.meta.nombre, objetivo: b.meta.objetivo, ahorrado: b.meta.ahorrado, aporte_mensual: b.meta.aporte });
+      if (error) throw error;
+    }
+    if (b.saldo > 0) {
+      const { error } = await sb.from("movimientos").insert({ tipo: "ingreso", monto: b.saldo, descripcion: "Lo que tenía al empezar", origen: "ajuste" });
       if (error) throw error;
     }
     const { error: e2 } = await sb.from("perfiles").update({
-      nombre: b.nombre, frecuencia: b.frecuencia, ingreso_por_pago: b.ingreso, bienvenida_lista: true,
-    }).eq("id", estado.usuario.id);
+      nombre: b.nombre, frecuencia: b.frecuencia, ingreso_por_pago: b.ingreso, dias_pago: b.dias, bienvenida_lista: true, saldo_listo: true,
+    }).eq("id", uid);
     if (e2) throw e2;
 
     await cargarTodo();
     estado.vista = "inicio";
     pintarApp();
-    toast("¡Listo! Esta es tu billetera.");
+    toast("¡Listo! Anota cada gasto y Luka te va avisando.");
   } catch (e) {
-    boton.disabled = false; boton.textContent = "Me sirve, empezar";
+    boton.disabled = false; boton.textContent = "Empezar";
     toast("No se pudo guardar. Revisa el internet e intenta otra vez.");
   }
 }
 
-/* ---------- App: inicio y pestañas ---------- */
+/* ---------- Armazón: barra de abajo y pestañas ---------- */
 
 const ICONOS = {
-  inicio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/></svg>',
+  inicio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/></svg>',
+  tarjetas: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="12" rx="3"/><path d="M6 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/></svg>',
   movimientos: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>',
   metas: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".5" fill="currentColor"/></svg>',
-  yo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
 };
-
-// Palabras que delatan el sobre de un gasto
-const PISTAS = {
-  Comida: /almuerzo|desayuno|cena|comida|corrientazo|rappi|domicilio|mercado|d1|ara|olimpica|olímpica|éxito|exito|tinto|caf[eé]|perro|hamburguesa|pizza|empanada|arepa|fruta|panader|snack|gaseosa|agua|pollo|restaurante|onces|merienda/,
-  Transporte: /gasolina|bus|buseta|transmetro|taxi|uber|didi|indriver|picap|moto|parqueadero|peaje|pasaje|metro|sitp|tanqueo/,
-  Salidas: /cine|rumba|cerveza|trago|discoteca|bar\b|fiesta|concierto|partido|estadio|salida|paseo|playa|juego|netflix|spotify|regalo/,
+// Íconos de las sugerencias
+const SIMBOLOS = {
+  ahorro: '<path d="M12 3v18M7 8h7a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h8"/>',
+  calendario: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>',
+  sube: '<path d="M4 17l6-6 4 4 6-7M15 8h5v5"/>',
+  baja: '<path d="M4 7l6 6 4-4 6 7M15 16h5v-5"/>',
+  alerta: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
+  hormiga: '<circle cx="8" cy="12" r="2.5"/><circle cx="14" cy="12" r="3"/><path d="M17 12h3M10 9l-2-3M14 9l1-3M10 15l-2 3M15 15l1 3"/>',
+  lapiz: '<path d="M4 20l4-1 11-11-3-3L5 16z"/>',
+  meta: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  bien: '<path d="M5 12l4 4 10-10"/>',
+  billete: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
 };
-const METODOS = ["Nequi", "Efectivo", "Tarjeta", "Daviplata", "Transferencia"];
-
-function sobrePorPista(texto) {
-  const t = (texto || "").toLowerCase();
-  for (const [nombre, re] of Object.entries(PISTAS)) {
-    if (re.test(t)) {
-      const s = estado.sobres.find((x) => x.nombre === nombre && x.tipo === "gasto");
-      if (s) return s.id;
-    }
-  }
-  return null;
-}
-
-const sobreDe = (id) => estado.sobres.find((s) => s.id === id);
-const porDia = (saldo, quedan) => Math.floor(Math.max(0, saldo) / quedan / 50) * 50;
+const simbolo = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${SIMBOLOS[k]}</svg>`;
 
 function barra() {
-  const b = (v, t) => `<button data-vista="${v}" ${estado.vista === v ? 'aria-current="page"' : ""}>${ICONOS[v]}${t}</button>`;
-  return `<div class="barra"><nav aria-label="Secciones">${b("inicio", "Inicio")}${b("movimientos", "Movimientos")}<button class="luka" data-vista="luka" aria-label="Hablar con Luka" ${estado.vista === "luka" ? 'aria-current="page"' : ""}>L</button>${b("metas", "Metas")}${b("yo", "Yo")}</nav></div>`;
+  const b = (v, t) => `<button data-vista="${v}" ${estado.vista === v || (v === "tarjetas" && ["tarjeta", "ajustar"].includes(estado.vista)) ? 'aria-current="page"' : ""}>${ICONOS[v]}${t}</button>`;
+  return `<div class="barra"><nav aria-label="Secciones">${b("inicio", "Inicio")}${b("tarjetas", "Tarjetas")}<button class="luka" data-vista="luka" aria-label="Hablar con Luka" ${estado.vista === "luka" ? 'aria-current="page"' : ""}>L</button>${b("movimientos", "Movimientos")}${b("metas", "Metas")}</nav></div>`;
 }
 
 function pintarApp() {
   const vistas = {
-    inicio: vistaInicio,
-    sobre: vistaSobre,
-    mover: vistaMover,
-    movimientos: vistaMovimientos,
-    ajustar: vistaAjustar,
-    luka: vistaLuka,
-    gmail: vistaGmail,
-    metas: vistaMetas,
-    yo: vistaYo,
+    inicio: vistaInicio, tarjetas: vistaTarjetas, tarjeta: vistaTarjeta, ajustar: vistaAjustar,
+    movimientos: vistaMovimientos, metas: vistaMetas, yo: vistaYo, luka: vistaLuka, gmail: vistaGmail,
   };
+  if (!vistas[estado.vista]) estado.vista = "inicio";
   app.innerHTML = vistas[estado.vista]() + barra();
   app.querySelectorAll("[data-vista]").forEach((el) => (el.onclick = () => ir(el.dataset.vista)));
   app.querySelectorAll("[data-anotar]").forEach((el) => (el.onclick = () => abrirAnotar({ sobre_id: el.dataset.anotar || null, tipo: el.dataset.tipo })));
@@ -578,209 +594,318 @@ function ir(vista, extra = {}) {
 }
 
 const enganches = {
-  inicio: engancharInicio,
-  sobre: engancharSobre,
-  mover: engancharMover,
-  movimientos: engancharMovimientos,
-  ajustar: engancharAjustar,
-  luka: engancharLuka,
-  gmail: engancharGmail,
-  metas: engancharMetas,
-  yo() {
-    document.getElementById("salir").onclick = () => sb.auth.signOut();
-    document.getElementById("rehacer").onclick = () => {
-      const b = document.getElementById("rehacer");
-      if (b.dataset.seguro) return empezarBienvenida();
-      b.dataset.seguro = "1";
-      b.textContent = "Se borran tus sobres, fijos y meta. Toca otra vez para seguir";
-    };
-    document.getElementById("ir-ajustar").onclick = () => ir("ajustar");
-    pintarAvisos();
-    document.getElementById("ir-gmail").onclick = () => ir("gmail");
-  },
+  inicio: engancharInicio, tarjetas: engancharTarjetas, tarjeta: engancharTarjeta, ajustar: engancharAjustar,
+  movimientos: engancharMovimientos, metas: engancharMetas, yo: engancharYo, luka: engancharLuka, gmail: engancharGmail,
 };
 
-/* ---------- Consejos con reglas fijas ---------- */
+/* ---------- Sugerencias con reglas fijas ---------- */
 
-function consejo() {
-  const s = saldos();
-  const quedan = diasQuedan();
-  const hoy = new Date().getDate();
+function sugerencias() {
+  const h = hoy0(), ahora = new Date();
+  const lista = [];
+  const plan = planDelDia();
+  const mesIni = inicioDeMes(), mesAntIni = new Date(h.getFullYear(), h.getMonth() - 1, 1);
+  const finVentanaAnt = new Date(h.getFullYear(), h.getMonth() - 1, Math.min(h.getDate() + 1, new Date(h.getFullYear(), h.getMonth(), 0).getDate() + 1));
 
-  // Un sobre de gasto que ya se pasó o va muy rápido
-  for (const x of estado.sobres.filter((y) => y.tipo === "gasto" && y.presupuesto > 0)) {
-    if (s[x.id] < 0) return `<div class="nota"><b>Te pasaste en ${esc(x.nombre)}</b>Vas ${pesos(-s[x.id])} por encima. Pasa plata de otra tarjeta para cuadrar.</div>`;
-  }
-  const finMes = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-  const avance = (hoy - 1) / finMes;
-  const apurado = estado.sobres
-    .filter((y) => y.tipo === "gasto" && y.presupuesto > 0)
-    .map((y) => ({ y, usado: 1 - s[y.id] / y.presupuesto }))
-    .filter((r) => r.usado >= 0.8 && r.usado > avance + 0.15)
-    .sort((a, b) => b.usado - a.usado)[0];
-  if (apurado) return `<div class="nota"><b>${esc(apurado.y.nombre)} va en ${Math.round(apurado.usado * 100)} %</b>Te quedan ${pesos(s[apurado.y.id])} para ${quedan} días: ${pesos(porDia(s[apurado.y.id], quedan))} por día.</div>`;
+  if (!estado.perfil.saldo_listo) lista.push({ icono: "billete", tono: "verde", titulo: "¿Cuánta plata tienes?", texto: "Así calculo lo que puedes gastar", accion: "Poner saldo", data: 'data-poner-saldo="1"' });
 
+  // Pagos que se vienen
   const pagados = fijosPagados();
-  const proximo = estado.fijos.filter((f) => f.dia_mes && f.dia_mes >= hoy && !pagados.has(f.nombre)).sort((a, b) => a.dia_mes - b.dia_mes)[0];
-  if (proximo && proximo.dia_mes - hoy <= 7) {
-    const cuando = proximo.dia_mes === hoy ? "hoy" : proximo.dia_mes - hoy === 1 ? "mañana" : `el ${proximo.dia_mes}`;
-    return `<div class="nota"><b>Se viene un pago fijo</b>${esc(proximo.nombre)} (${pesos(proximo.monto)}) es ${cuando}. Ya está apartado en Fijos.</div>`;
+  for (const f of estado.fijos.filter((x) => x.dia_mes && !pagados.has(x.nombre))) {
+    const d = proximoFijo(f.dia_mes);
+    if ((d - h) / 864e5 <= 3) lista.push({ icono: "calendario", tono: "amarillo", titulo: `${f.nombre} ${cuandoTxt(d)}`, texto: pesos(f.monto), accion: "Ya lo pagué", data: `data-pagar-fijo="${f.id}"` });
+  }
+  for (const d of estado.deudas.filter((x) => !x.pagada && x.fecha_limite)) {
+    const f = new Date(d.fecha_limite + "T00:00:00");
+    if ((f - h) / 864e5 <= 5) lista.push({ icono: "alerta", tono: "rojo", titulo: `Deuda: ${d.descripcion}`, texto: `${pesos(d.monto)} · vence ${cuandoTxt(f)}`, accion: "Pagar", data: `data-pagar-deuda="${d.id}"` });
   }
 
-  // Plata apartada para una meta que todavía no se abona
-  const apartado = estado.sobres.filter((y) => y.tipo === "ahorro" && metaDe(y.id) && s[y.id] > 0)[0];
-  if (apartado && hoy >= 3) return `<div class="nota"><b>Tienes ${pesos(s[apartado.id])} apartados para ${esc(apartado.nombre)}</b>Abónalos a la meta para no gastártelos.<br><button class="chip" data-abonar="${metaDe(apartado.id).id}" style="margin-top:8px">Abonar ahora</button></div>`;
-
-  // Gastos hormiga: muchos gastos chiquitos
-  const hormiga = estado.movimientos.filter((m) => m.tipo === "gasto" && m.monto <= 10000);
-  if (hormiga.length >= 6) {
-    const total = hormiga.reduce((t, m) => t + m.monto, 0);
-    return `<div class="nota"><b>Ojo con los gastos hormiga</b>Llevas ${hormiga.length} gastos de menos de $10.000 este mes. Suman ${pesos(total)}.</div>`;
+  // Ahorro inteligente: le entró plata y no ha guardado nada desde entonces
+  const meta = metasActivas()[0];
+  const ingreso = estado.movs.find((m) => m.tipo === "ingreso" && cuenta(m));
+  if (meta && ingreso && (ahora - new Date(ingreso.fecha)) / 864e5 <= 3 && !estado.movs.some((m) => m.tipo === "abono" && new Date(m.fecha) >= new Date(ingreso.fecha))) {
+    const porPago = meta.aporte_mensual ? meta.aporte_mensual / PAGOS_AL_MES[estado.perfil.frecuencia] : ingreso.monto * 0.15;
+    const guardar = Math.min(redondear(porPago), meta.objetivo - meta.ahorrado, Math.max(0, redondear(estado.saldo * 0.5)));
+    if (guardar >= 1000) lista.push({ icono: "ahorro", tono: "verde", titulo: `Guarda ${pesos(guardar)}`, texto: `para ${meta.nombre}`, accion: "Guardar", data: `data-guardar="${meta.id}:${guardar}"` });
   }
-  if (!estado.movimientos.length) return `<div class="nota"><b>Empieza a anotar</b>Toca la L de abajo cada vez que gastes. Cada gasto sale de su tarjeta y mientras más anotes, mejores consejos te doy.</div>`;
-  return "";
+
+  if (plan.quedaHoy < 0) lista.push({ icono: "alerta", tono: "rojo", titulo: `Hoy te pasaste ${pesos(-plan.quedaHoy)}`, texto: "Mañana tendrás un poco menos" });
+
+  // Tarjetas que suben o bajan contra el mes pasado a esta misma fecha
+  const comp = categorias().map((c) => {
+    const este = suma(gastosEntre(mesIni, sumaDias(h, 1)).filter((m) => m.sobre_id === c.id));
+    const antes = suma(gastosEntre(mesAntIni, finVentanaAnt).filter((m) => m.sobre_id === c.id));
+    return { c, este, antes, dif: este - antes };
+  });
+  const sube = comp.filter((x) => x.este >= 20000 && x.antes > 0 && x.este >= x.antes * 1.25).sort((a, b) => b.dif - a.dif)[0];
+  if (sube) lista.push({ icono: "sube", tono: "rojo", titulo: `${sube.c.nombre} ↑${pct(sube.este, sube.antes)} %`, texto: "vs. el mes pasado a esta fecha", data: `data-ir-tarjeta="${sube.c.id}"` });
+  const baja = comp.filter((x) => x.antes >= 20000 && x.este <= x.antes * 0.75).sort((a, b) => a.dif - b.dif)[0];
+  if (baja) lista.push({ icono: "baja", tono: "verde", titulo: `${baja.c.nombre} ↓${-pct(baja.este, baja.antes)} %`, texto: "¡Vas mejor que el mes pasado!", data: `data-ir-tarjeta="${baja.c.id}"` });
+
+  // Topes
+  for (const c of categorias().filter((x) => x.presupuesto > 0)) {
+    const g = suma(gastosEntre(mesIni, sumaDias(h, 1)).filter((m) => m.sobre_id === c.id));
+    if (g >= c.presupuesto * 0.8) lista.push({ icono: "alerta", tono: g > c.presupuesto ? "rojo" : "amarillo", titulo: `${c.nombre} al ${Math.round((g / c.presupuesto) * 100)} %`, texto: `de tu tope de ${pesos(c.presupuesto)}`, data: `data-ir-tarjeta="${c.id}"` });
+  }
+
+  // Gastos hormiga
+  const hormiga = estado.movimientos.filter((m) => m.tipo === "gasto" && cuenta(m) && m.monto <= 10000);
+  if (hormiga.length >= 6) lista.push({ icono: "hormiga", tono: "amarillo", titulo: `Gastos hormiga: ${pesos(suma(hormiga))}`, texto: `${hormiga.length} gastos pequeños este mes` });
+
+  // El día de la semana más caro (con al menos 3 semanas de datos)
+  const gastos8 = gastosEntre(sumaDias(h, -56), sumaDias(h, 1));
+  if (gastos8.length >= 10 && (h - new Date(gastos8[gastos8.length - 1].fecha)) / 864e5 >= 21) {
+    const porDiaSem = [0, 0, 0, 0, 0, 0, 0];
+    gastos8.forEach((m) => (porDiaSem[new Date(m.fecha).getDay()] += m.monto));
+    const max = Math.max(...porDiaSem), prom = porDiaSem.reduce((a, b) => a + b, 0) / 7;
+    if (max >= prom * 1.6) { const d = porDiaSem.indexOf(max); lista.push({ icono: "calendario", tono: "amarillo", titulo: `Los ${DIAS_PLURAL[d]} gastas más`, texto: "Ojo ese día" }); }
+  }
+
+  // Meta casi lista
+  for (const m of metasActivas()) if (m.ahorrado >= m.objetivo * 0.9) lista.push({ icono: "meta", tono: "verde", titulo: `¡Casi logras ${m.nombre}!`, texto: `Te faltan ${pesos(Math.max(0, m.objetivo - m.ahorrado))}`, data: 'data-vista="metas"' });
+
+  // No ha anotado nada hoy
+  if (ahora.getHours() >= 17 && !estado.movs.some((m) => new Date(m.creado) >= h && cuenta(m))) lista.push({ icono: "lapiz", tono: "verde", titulo: "¿Qué gastaste hoy?", texto: "Cuéntale a Luka", data: 'data-vista="luka"' });
+
+  if (!lista.length) lista.push(estado.movs.some(cuenta)
+    ? { icono: "bien", tono: "verde", titulo: "Vas bien", texto: "Sigue anotando y te doy más consejos" }
+    : { icono: "lapiz", tono: "verde", titulo: "Anota tu primer gasto", texto: "Toca «Gasto» o háblale a Luka" });
+  return lista.slice(0, 6);
 }
 
-/* ---------- Inicio con la billetera ---------- */
+/* ---------- Inicio ---------- */
 
-function fijosPagados() {
-  const fijo = estado.sobres.find((x) => x.tipo === "fijo");
-  return new Set(estado.movimientos.filter((m) => m.tipo === "gasto" && fijo && m.sobre_id === fijo.id).map((m) => m.descripcion));
+function anillo(valor, total, color) {
+  const r = 30, c = 2 * Math.PI * r;
+  const p = total > 0 ? Math.min(1, Math.max(0, valor / total)) : valor > 0 ? 1 : 0;
+  return `<svg class="anillo" viewBox="0 0 72 72" aria-hidden="true"><circle cx="36" cy="36" r="${r}" fill="none" stroke="currentColor" stroke-opacity=".22" stroke-width="8"/><circle cx="36" cy="36" r="${r}" fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - p)}" transform="rotate(-90 36 36)"/></svg>`;
+}
+
+function mini(m) {
+  const c = sobreDe(m.sobre_id);
+  const color = m.tipo === "ingreso" ? "var(--verde)" : c?.color || "#c9d3cd";
+  return `<div class="mini-mov"><i style="background:${color}"></i><span>${esc(m.descripcion || c?.nombre || "Ingreso")}</span><b class="num ${m.tipo === "ingreso" ? "entra" : ""}">${m.tipo === "ingreso" ? "+" : "−"}${pesos(m.monto)}</b></div>`;
+}
+
+function resumenHoy() {
+  const h = hoy0(), man = sumaDias(h, 1);
+  const g = gastosEntre(h, man), i = ingresosEntre(h, man);
+  return `
+    <div class="baldosas">
+      <div class="baldosa"><span>Gastaste</span><b class="num">${pesos(suma(g))}</b></div>
+      <div class="baldosa"><span>Te entró</span><b class="num entra">${pesos(suma(i))}</b></div>
+    </div>
+    ${[...i, ...g].length ? `<div class="minis">${[...i, ...g].slice(0, 5).map(mini).join("")}</div>` : `<p class="sub centro">Nada anotado hoy.</p>`}`;
+}
+
+function resumenSemana() {
+  const h = hoy0(), lun = lunesDe(h);
+  const dias = [...Array(7)].map((_, k) => { const d = sumaDias(lun, k); return { d, total: suma(gastosEntre(d, sumaDias(d, 1))) }; });
+  const max = Math.max(1, ...dias.map((x) => x.total));
+  const total = dias.reduce((t, x) => t + x.total, 0);
+  const diasPasados = Math.round((h - lun) / 864e5) + 1;
+  const antes = suma(gastosEntre(sumaDias(lun, -7), sumaDias(lun, -7 + diasPasados)));
+  const p = pct(total, antes);
+  return `
+    <div class="barras" role="img" aria-label="Gastos de esta semana por día">
+      ${dias.map((x) => `<div class="barra-dia ${x.d.getTime() === h.getTime() ? "hoy" : x.d > h ? "futuro" : ""}">
+        <span class="valor">${x.total ? corto(x.total) : ""}</span>
+        <i style="height:${Math.max(4, (x.total / max) * 100)}%"></i>
+        <span class="dia">${"DLMMJVS"[x.d.getDay()]}</span></div>`).join("")}
+    </div>
+    <div class="baldosas">
+      <div class="baldosa"><span>Esta semana</span><b class="num">${pesos(total)}</b></div>
+      <div class="baldosa"><span>vs. semana pasada</span><b class="num ${antes ? (p > 0 ? "sube" : "entra") : ""}">${antes ? (p > 0 ? "↑" : "↓") + Math.abs(p) + " %" : "—"}</b></div>
+    </div>`;
+}
+
+function resumenMes() {
+  const h = hoy0(), ini = inicioDeMes(), man = sumaDias(h, 1);
+  const g = gastosEntre(ini, man), i = ingresosEntre(ini, man);
+  const ahorro = suma(estado.movs.filter((m) => m.tipo === "abono" && entre(ini, man)(m))) - suma(estado.movs.filter((m) => m.tipo === "retiro" && entre(ini, man)(m)));
+  const porCat = categorias().map((c) => ({ c, total: suma(g.filter((m) => m.sobre_id === c.id)) })).filter((x) => x.total > 0).sort((a, b) => b.total - a.total);
+  const gastado = suma(g);
+  const antes = suma(gastosEntre(new Date(h.getFullYear(), h.getMonth() - 1, 1), new Date(h.getFullYear(), h.getMonth() - 1, h.getDate() + 1)));
+  const p = pct(gastado, antes);
+  return `
+    <div class="baldosas tres">
+      <div class="baldosa"><span>Entró</span><b class="num entra">${pesos(suma(i))}</b></div>
+      <div class="baldosa"><span>Gastaste</span><b class="num">${pesos(gastado)}</b></div>
+      <div class="baldosa"><span>Ahorraste</span><b class="num">${pesos(ahorro)}</b></div>
+    </div>
+    ${porCat.length ? `<div class="cats">${porCat.slice(0, 5).map((x) => `
+      <button class="cat-fila" data-ir-tarjeta="${x.c.id}"><span class="cat-nom"><i style="background:${x.c.color}"></i>${esc(x.c.nombre)}</span><span class="num">${pesos(x.total)}</span>
+        <span class="cat-barra"><i style="width:${Math.round((x.total / porCat[0].total) * 100)}%;background:${x.c.color}"></i></span></button>`).join("")}</div>` : `<p class="sub centro">Todavía no hay gastos este mes.</p>`}
+    ${antes ? `<p class="comparar ${p > 0 ? "sube" : "entra"}">${p > 0 ? "↑" : "↓"} ${Math.abs(p)} % vs. ${MESES[(h.getMonth() + 11) % 12]} a esta fecha</p>` : ""}`;
 }
 
 function vistaInicio() {
-  const s = saldos();
-  const gasto = estado.sobres.filter((x) => x.tipo === "gasto");
-  const disponible = gasto.reduce((t, x) => t + Math.max(0, s[x.id]), 0);
-  const quedan = diasQuedan();
   const d = new Date();
   const nombre = estado.perfil?.nombre?.split(" ")[0] || "";
-  const tarjetas = estado.sobres.filter((x) => x.tipo !== "fijo");
-  const alto = 96, paso = 50;
-  const fijos = estado.sobres.find((x) => x.tipo === "fijo");
-  const pagados = fijosPagados();
-  const pendientes = estado.fijos.filter((f) => !pagados.has(f.nombre));
-  const entro = estado.movimientos.filter((m) => m.tipo === "ingreso").reduce((t, m) => t + m.monto, 0);
-
+  const plan = planDelDia();
+  const etiqueta = plan.quedaHoy < 0 ? "Hoy te pasaste" : plan.gastadoHoy ? "Hoy te quedan" : "Hoy puedes gastar";
+  const sugs = sugerencias();
+  const metas = metasActivas().slice(0, 3);
+  const periodos = [["hoy", "Hoy"], ["semana", "Semana"], ["mes", "Mes"]];
   return `
-  <section class="pantalla inicio">
-    <span class="saludo">Hola${nombre ? ", " + esc(nombre) : ""} · ${DIAS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]}</span>
-    <div class="hoy">
-      <span class="cifra">${pesos(porDia(disponible, quedan))}</span>
-      <span class="sub">puedes gastar hoy · ${quedan === 1 ? "último día del mes" : `quedan ${quedan} días del mes`}${entro ? ` · te entraron ${pesos(entro)}` : ""}</span>
+  <section class="pantalla inicio home">
+    <header class="home-cab">
+      <div><span class="saludo">Hola${nombre ? ", " + esc(nombre) : ""}</span><span class="fecha">${DIAS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]}</span></div>
+      <button class="avatar" data-vista="yo" aria-label="Mi cuenta">${esc((nombre || "Y")[0].toUpperCase())}</button>
+    </header>
+
+    <div class="hero ${plan.quedaHoy < 0 ? "rojo" : ""}">
+      <div class="hero-txt">
+        <span class="eti">${etiqueta}</span>
+        <span class="cifra">${pesos(Math.abs(plan.quedaHoy))}</span>
+        <span class="chips-hero"><span>Tienes ${pesos(estado.saldo)}</span><span>Pago ${cuandoTxt(plan.pago)}</span></span>
+      </div>
+      <div class="hero-anillo">${anillo(plan.gastadoHoy, plan.porDia, plan.quedaHoy < 0 ? "#ffd2c7" : "#ffffff")}<small>${plan.porDia ? Math.min(999, Math.round((plan.gastadoHoy / plan.porDia) * 100)) : 0} %</small></div>
     </div>
-    <div class="billetera" style="height:${alto + paso * (tarjetas.length - 1)}px">
-      ${tarjetas.map((x, i) => {
-        const saldo = s[x.id];
-        const esAhorro = x.tipo === "ahorro";
-        const meta = esAhorro ? metaDe(x.id) : null;
-        const monto = esAhorro && meta ? pesos(meta.ahorrado) : pesos(saldo);
-        const detalle = esAhorro
-          ? (meta ? `${Math.min(100, Math.round((meta.ahorrado / meta.objetivo) * 100))} % de ${pesos(meta.objetivo)} · ` : "") + (saldo > 0 ? `${pesos(saldo)} por abonar` : "abonado este mes")
-          : saldo < 0 ? `te pasaste ${pesos(-saldo)} · era ${pesos(x.presupuesto)}` : saldo === 0 ? `agotado · era ${pesos(x.presupuesto)}` : `de ${pesos(x.presupuesto)} · ${pesos(porDia(saldo, quedan))} por día`;
-        return `<button class="tarjeta" data-id="${x.id}" style="top:${i * paso}px;--c:${x.color};--t:${letraDe(x.color)}" aria-label="${esc(x.nombre)}: ${monto}. Mantén presionado para mover plata">
-          <span class="arriba"><span class="nombre">${esAhorro && meta ? "Ahorro · " + esc(x.nombre) : esc(x.nombre)}</span><span class="monto">${monto}</span></span>
-          <span class="de">${detalle}</span>
-        </button>`;
-      }).join("")}
+
+    <div class="rapidas">
+      <button class="rapida" data-anotar data-tipo="gasto"><span>−</span>Gasto</button>
+      <button class="rapida" data-anotar data-tipo="ingreso"><span>+</span>Me entró plata</button>
     </div>
-    <div class="fila-pista"><p class="pista">Toca una tarjeta para abrirla. Mantenla presionada y arrástrala sobre otra para mover plata.</p><button class="chip" data-anotar>+ Anotar</button></div>
-    ${fijos ? `<button class="fijos-resumen" id="ver-fijos" aria-expanded="false"><span>Fijos del mes · ${pesos(fijos.presupuesto)}</span><span>${pendientes.length ? `faltan ${pendientes.length} por pagar` : "todos pagados"}</span></button>
-    <div class="lista-pagos" id="lista-fijos" hidden>
-      ${estado.fijos.map((f) => `<div class="pago"><span>${esc(f.nombre)}<small>${f.dia_mes ? "día " + f.dia_mes + " · " : ""}${pesos(f.monto)}</small></span>${pagados.has(f.nombre) ? `<span class="pagado">Pagado</span>` : `<button class="chip" data-pagar="${f.id}">Ya lo pagué</button>`}</div>`).join("")}
-    </div>` : ""}
-    ${consejo()}
+
+    <div class="sugs" aria-label="Sugerencias">
+      ${sugs.map((s) => `
+      <article class="sug ${s.tono}" ${s.data && !s.accion ? s.data + ' role="button" tabindex="0"' : ""}>
+        <span class="sug-ico">${simbolo(s.icono)}</span>
+        <b>${esc(s.titulo)}</b>
+        <span class="sug-txt">${esc(s.texto)}</span>
+        ${s.accion ? `<button class="sug-btn" ${s.data}>${s.accion}</button>` : ""}
+      </article>`).join("")}
+    </div>
+
+    <section class="resumen">
+      <div class="seg" role="tablist">${periodos.map(([v, t]) => `<button role="tab" data-periodo="${v}" aria-selected="${estado.periodo === v}">${t}</button>`).join("")}</div>
+      ${{ hoy: resumenHoy, semana: resumenSemana, mes: resumenMes }[estado.periodo]()}
+    </section>
+
+    ${metas.length ? `<section class="metas-mini">
+      ${metas.map((m) => `<button class="meta-mini" data-vista="metas">${anillo(m.ahorrado, m.objetivo, "var(--azul)")}<span><b>${esc(m.nombre)}</b><small>${Math.min(100, Math.round((m.ahorrado / m.objetivo) * 100))} % · ${pesos(m.ahorrado)}</small></span></button>`).join("")}
+    </section>` : ""}
   </section>`;
 }
 
 function engancharInicio() {
-  // Tocar abre el sobre; mantener presionado y soltar sobre otra tarjeta abre "Mover plata"
-  app.querySelectorAll(".tarjeta").forEach((el) => {
-    let timer = null, arrastrando = false, y0 = 0, x0 = 0, movio = false;
-    const destinoEn = (x, y) => {
-      el.style.pointerEvents = "none";
-      const bajo = document.elementFromPoint(x, y)?.closest(".tarjeta");
-      el.style.pointerEvents = "";
-      return bajo && bajo !== el ? bajo : null;
-    };
-    const marcar = (bajo) => app.querySelectorAll(".tarjeta").forEach((t) => t.classList.toggle("destino", t === bajo));
-    const empezar = (x, y) => {
-      x0 = x; y0 = y; movio = false;
-      timer = setTimeout(() => { arrastrando = true; el.classList.add("alzada"); navigator.vibrate?.(15); }, 330);
-    };
-    const mover = (x, y, e) => {
-      if (!arrastrando) {
-        if (Math.abs(y - y0) > 8 || Math.abs(x - x0) > 8) { clearTimeout(timer); movio = true; }
-        return;
-      }
-      e.preventDefault();
-      el.style.transform = `translateY(${y - y0}px) scale(1.03)`;
-      marcar(destinoEn(x, y));
-    };
-    const soltar = (x, y) => {
-      clearTimeout(timer);
-      if (!arrastrando) {
-        if (!movio) ir("sobre", { sobreAbierto: el.dataset.id });
-        return;
-      }
-      arrastrando = false;
-      el.classList.remove("alzada");
-      el.style.transform = "";
-      const bajo = destinoEn(x, y);
-      marcar(null);
-      if (!bajo) return;
-      const [x1, x2] = [sobreDe(el.dataset.id), sobreDe(bajo.dataset.id)];
-      if (x2.tipo === "ahorro" && metaDe(x2.id)) return abrirAbono(metaDe(x2.id), x1.id);
-      if (x1.tipo === "ahorro" && metaDe(x1.id)) return abrirRetiro(metaDe(x1.id), x2.id);
-      if (x1.tipo !== "gasto" || x2.tipo !== "gasto") return toast("Esa tarjeta no tiene meta. Créala en Metas.");
-      ir("mover", { mover: { de: el.dataset.id, a: bajo.dataset.id, monto: 0 } });
-    };
-    el.addEventListener("touchstart", (e) => empezar(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
-    el.addEventListener("touchmove", (e) => mover(e.touches[0].clientX, e.touches[0].clientY, e), { passive: false });
-    el.addEventListener("touchend", (e) => { e.preventDefault(); soltar(e.changedTouches[0].clientX, e.changedTouches[0].clientY); });
-    el.addEventListener("touchcancel", () => { clearTimeout(timer); arrastrando = false; el.classList.remove("alzada"); el.style.transform = ""; marcar(null); });
-    el.addEventListener("mousedown", (e) => {
-      empezar(e.clientX, e.clientY);
-      const mm = (ev) => mover(ev.clientX, ev.clientY, ev);
-      const mu = (ev) => { document.removeEventListener("mousemove", mm); document.removeEventListener("mouseup", mu); soltar(ev.clientX, ev.clientY); };
-      document.addEventListener("mousemove", mm);
-      document.addEventListener("mouseup", mu);
-    });
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ir("sobre", { sobreAbierto: el.dataset.id }); } });
-  });
-
-  app.querySelectorAll("[data-abonar]").forEach((b) => (b.onclick = () => abrirAbono(metaPorId(b.dataset.abonar))));
-  const ver = document.getElementById("ver-fijos");
-  if (ver) ver.onclick = () => {
-    const lista = document.getElementById("lista-fijos");
-    lista.hidden = !lista.hidden;
-    ver.setAttribute("aria-expanded", String(!lista.hidden));
-  };
-  app.querySelectorAll("[data-pagar]").forEach((el) => (el.onclick = async () => {
-    const f = estado.fijos.find((x) => x.id === el.dataset.pagar);
-    const fijo = estado.sobres.find((x) => x.tipo === "fijo");
-    el.disabled = true;
-    const ok = await guardarMovimiento({ tipo: "gasto", monto: f.monto, sobre_id: fijo.id, descripcion: f.nombre, metodo: "" });
-    if (ok) { toast(`${f.nombre} pagado`); pintarApp(); document.getElementById("ver-fijos")?.click(); }
-    else el.disabled = false;
-  }));
+  app.querySelectorAll("[data-periodo]").forEach((b) => (b.onclick = () => { estado.periodo = b.dataset.periodo; pintarApp(); }));
+  engancharSugerencias(app);
 }
 
-/* ---------- Un sobre abierto ---------- */
+// Botones que pueden salir en sugerencias y otras pantallas
+function engancharSugerencias(raiz) {
+  raiz.querySelectorAll("[data-ir-tarjeta]").forEach((el) => (el.onclick = () => ir("tarjeta", { tarjetaAbierta: el.dataset.irTarjeta })));
+  raiz.querySelectorAll("[data-poner-saldo]").forEach((el) => (el.onclick = abrirSaldo));
+  raiz.querySelectorAll("[data-pagar-fijo]").forEach((el) => (el.onclick = () => pagarFijo(estado.fijos.find((f) => f.id === el.dataset.pagarFijo), el)));
+  raiz.querySelectorAll("[data-pagar-deuda]").forEach((el) => (el.onclick = () => pagarDeuda(estado.deudas.find((d) => d.id === el.dataset.pagarDeuda), el)));
+  raiz.querySelectorAll("[data-guardar]").forEach((el) => (el.onclick = async () => {
+    const [id, monto] = el.dataset.guardar.split(":");
+    const meta = metaPorId(id);
+    el.disabled = true;
+    const ok = await guardarMovimiento({ tipo: "abono", monto: +monto, meta_id: id, descripcion: `Ahorro para ${meta.nombre}` });
+    if (ok) { pintarApp(); toast(`Guardado. Llevas ${pesos(metaPorId(id).ahorrado)} para ${meta.nombre}.`); } else el.disabled = false;
+  }));
+  raiz.querySelectorAll(".sug[role=button]").forEach((el) => (el.onkeydown = (e) => { if (e.key === "Enter") el.click(); }));
+}
+
+async function pagarFijo(f, boton) {
+  if (!f) return;
+  const cat = estado.sobres.find((s) => s.tipo === "fijo") || categorias().find((s) => s.nombre === "Otros");
+  if (boton) boton.disabled = true;
+  const ok = await guardarMovimiento({ tipo: "gasto", monto: f.monto, sobre_id: cat?.id || null, descripcion: f.nombre });
+  if (ok) { pintarApp(); toast(`${f.nombre} pagado`); } else if (boton) boton.disabled = false;
+}
+
+async function pagarDeuda(d, boton) {
+  if (!d) return;
+  const cat = categorias().find((s) => s.nombre === "Otros") || categorias()[0];
+  if (boton) boton.disabled = true;
+  const ok = await guardarMovimiento({ tipo: "gasto", monto: d.monto, sobre_id: cat?.id || null, descripcion: `Pago: ${d.descripcion}` });
+  if (!ok) { if (boton) boton.disabled = false; return; }
+  await sb.from("deudas").update({ pagada: true, fecha_pago: fechaLocal(new Date()) }).eq("id", d.id);
+  await cargarTodo();
+  pintarApp();
+  toast("Deuda pagada");
+}
+
+// Poner o corregir el saldo real: se guarda como ajuste, no cuenta como gasto ni ingreso
+function abrirSaldo() {
+  abrirHoja(`
+    <h2>¿Cuánta plata tienes hoy?</h2>
+    <p class="sub">Suma Nequi, banco y efectivo. Luka ahora cree que tienes ${pesos(estado.saldo)}.</p>
+    ${campoMonto("sa-monto", "Tengo en total", 0)}
+    <div class="acciones"><button class="boton" id="sa-ok">Guardar</button><button class="boton texto" data-cerrar>Cancelar</button></div>`,
+    (hoja) => {
+      const input = formatearAlSalir(hoja, "sa-monto");
+      setTimeout(() => input.focus(), 250);
+      hoja.querySelector("#sa-ok").onclick = async (e) => {
+        const real = leerMonto(input.value);
+        e.currentTarget.disabled = true;
+        const dif = real - estado.saldo;
+        if (dif) {
+          const { error } = await sb.from("movimientos").insert({ tipo: dif > 0 ? "ingreso" : "gasto", monto: Math.abs(dif), descripcion: "Ajuste de saldo", origen: "ajuste" });
+          if (error) { toast("No se pudo guardar."); e.currentTarget.disabled = false; return; }
+        }
+        await sb.from("perfiles").update({ saldo_listo: true }).eq("id", estado.usuario.id);
+        await cargarTodo();
+        cerrarHoja();
+        pintarApp();
+        toast(`Listo: tienes ${pesos(estado.saldo)}`);
+      };
+    });
+}
+
+/* ---------- Tarjetas (categorías) ---------- */
+
+function datosTarjeta(c) {
+  const h = hoy0(), ini = inicioDeMes();
+  const g = gastosEntre(ini, sumaDias(h, 1)).filter((m) => m.sobre_id === c.id);
+  const antes = suma(gastosEntre(new Date(h.getFullYear(), h.getMonth() - 1, 1), new Date(h.getFullYear(), h.getMonth() - 1, h.getDate() + 1)).filter((m) => m.sobre_id === c.id));
+  return { lista: g, total: suma(g), antes };
+}
+
+function vistaTarjetas() {
+  const cats = categorias();
+  const alto = 104, paso = 58;
+  const mes = MESES[new Date().getMonth()];
+  return `
+  <section class="pantalla inicio">
+    <div class="titulo-fila"><h1>Tarjetas</h1><button class="chip" data-vista="ajustar">Ajustar</button></div>
+    <p class="sub">Lo que llevas gastado en ${mes}, por tarjeta. Toca una para ver el detalle.</p>
+    <div class="billetera" style="height:${alto + paso * (cats.length - 1)}px">
+      ${cats.map((c, i) => {
+        const d = datosTarjeta(c);
+        const p = pct(d.total, d.antes);
+        const detalle = c.presupuesto > 0
+          ? `${Math.round((d.total / c.presupuesto) * 100)} % de tu tope de ${pesos(c.presupuesto)}`
+          : `${d.lista.length} ${d.lista.length === 1 ? "gasto" : "gastos"}${d.antes ? ` · ${p > 0 ? "↑" : "↓"}${Math.abs(p)} % vs. ${MESES[(new Date().getMonth() + 11) % 12]}` : ""}`;
+        return `<button class="tarjeta" data-ir-tarjeta="${c.id}" style="top:${i * paso}px;--c:${c.color};--t:${letraDe(c.color)}" aria-label="${esc(c.nombre)}: ${pesos(d.total)} este mes">
+          <span class="arriba"><span class="nombre">${esc(c.nombre)}</span><span class="monto">${pesos(d.total)}</span></span>
+          ${c.presupuesto > 0 ? `<span class="tope"><i style="width:${Math.min(100, Math.round((d.total / c.presupuesto) * 100))}%"></i></span>` : ""}
+          <span class="de">${detalle}</span>
+        </button>`;
+      }).join("")}
+    </div>
+  </section>`;
+}
+
+function engancharTarjetas() { engancharSugerencias(app); }
 
 function filaMovimiento(m) {
   const s = sobreDe(m.sobre_id);
-  const destino = sobreDe(m.sobre_destino_id);
   const f = new Date(m.fecha);
   let titulo = m.descripcion || (m.tipo === "ingreso" ? "Ingreso" : "Gasto");
   let sub = [s?.nombre, m.metodo].filter(Boolean).join(" · ");
   let signo = "−", clase = "";
-  if (m.tipo === "ingreso") { signo = "+"; clase = "entra"; sub = ["Ingreso", m.metodo].filter(Boolean).join(" · "); }
-  if (m.tipo === "traslado") { signo = ""; clase = "pasa"; titulo = `${s?.nombre || "?"} → ${destino?.nombre || "?"}`; sub = "Movida entre tarjetas"; }
-  if (m.tipo === "abono") { signo = ""; clase = "pasa"; titulo = `Abono a ${metaPorId(m.meta_id)?.nombre || "la meta"}`; sub = `Desde ${s?.nombre || "?"}`; }
-  if (m.tipo === "retiro") { signo = ""; clase = "pasa"; titulo = `Sacado de ${metaPorId(m.meta_id)?.nombre || "la meta"}`; sub = `A ${destino?.nombre || "?"}`; }
+  if (m.tipo === "ingreso") { signo = "+"; clase = "entra"; sub = [m.origen === "ajuste" ? "Ajuste de saldo" : "Ingreso", m.metodo].filter(Boolean).join(" · "); }
+  if (m.tipo === "abono") { signo = ""; clase = "pasa"; titulo = m.descripcion || `Ahorro para ${metaPorId(m.meta_id)?.nombre || "tu meta"}`; sub = "Ahorro"; }
+  if (m.tipo === "retiro") { signo = "+"; clase = "pasa"; titulo = m.descripcion || "Sacado del ahorro"; sub = "Ahorro"; }
+  if (m.tipo === "traslado") { signo = ""; clase = "pasa"; sub = "Movida entre tarjetas"; }
+  if (m.origen === "ajuste" && m.tipo === "gasto") sub = "Ajuste de saldo";
+  const color = m.tipo === "ingreso" ? "var(--verde)" : m.tipo === "abono" || m.tipo === "retiro" ? "var(--azul)" : s?.color || "#c9d3cd";
   const hora = fechaLocal(f) === fechaLocal(new Date(m.creado)) ? `${String(f.getHours()).padStart(2, "0")}:${String(f.getMinutes()).padStart(2, "0")}` : "";
-  const color = m.tipo === "ingreso" ? "var(--verde)" : (s?.color || "#c9d3cd");
   return `<button class="mov" data-mov="${m.id}">
     <i style="background:${color}"></i>
     <span class="txt">${esc(titulo)}<small>${esc(sub)}${hora ? (sub ? " · " : "") + hora : ""}</small></span>
@@ -788,124 +913,135 @@ function filaMovimiento(m) {
   </button>`;
 }
 
-function vistaSobre() {
-  const x = sobreDe(estado.sobreAbierto);
-  if (!x) { estado.vista = "inicio"; return vistaInicio(); }
-  if (x.tipo === "ahorro") { estado.vista = "metas"; return vistaMetas(); }
-  const s = saldos()[x.id];
-  const quedan = diasQuedan();
-  const movs = estado.movimientos.filter((m) => m.sobre_id === x.id || m.sobre_destino_id === x.id);
-  const gastado = movs.filter((m) => m.tipo === "gasto").reduce((t, m) => t + m.monto, 0);
-  const pct = x.presupuesto ? Math.min(100, Math.max(0, Math.round((gastado / x.presupuesto) * 100))) : 0;
-  const esAhorro = x.tipo === "ahorro";
-
-  let tip = "";
-  if (!esAhorro && x.presupuesto) {
-    const top = Object.entries(movs.filter((m) => m.tipo === "gasto").reduce((r, m) => { const k = (m.descripcion || "otros").toLowerCase(); r[k] = (r[k] || 0) + m.monto; return r; }, {})).sort((a, b) => b[1] - a[1])[0];
-    if (s < 0) tip = `Te pasaste ${pesos(-s)}. Toca «Mover plata» y pasa de otra tarjeta que tenga de sobra.`;
-    else if (top && top[1] >= gastado * 0.4 && movs.filter((m) => m.tipo === "gasto").length >= 3) tip = `Lo que más se lleva este sobre: «${esc(top[0])}», con ${pesos(top[1])} (${Math.round((top[1] / gastado) * 100)} %).`;
-    else tip = `Para que te alcance, gasta máximo ${pesos(porDia(s, quedan))} por día.`;
-  }
-
-  return `
-  <section class="pantalla inicio">
-    <button class="volver" data-vista="inicio">← Billetera</button>
-    <div class="abierta" style="--c:${x.color};--t:${letraDe(x.color)}">
-      <div class="arriba"><span>${esAhorro ? "Ahorro · " : ""}${esc(x.nombre)}</span><span>${quedan} días</span></div>
-      <span class="monto">${pesos(s)}</span>
-      <div class="barrita"><i style="width:${pct}%"></i></div>
-      <small>${esAhorro ? `Le metes ${pesos(x.presupuesto)} al mes` : `Gastaste ${pesos(gastado)} de ${pesos(x.presupuesto)} · ${pesos(porDia(s, quedan))} por día`}</small>
-    </div>
-    ${tip ? `<div class="nota"><b>Luka dice</b>${tip}</div>` : ""}
-    <div class="fila">
-      <button class="boton" data-anotar="${x.id}">Anotar gasto</button>
-      <button class="boton claro" id="mover-desde">Mover plata</button>
-    </div>
-    <h3 class="titulo-lista">Este mes</h3>
-    <div class="lista-movs">${movs.length ? movs.map(filaMovimiento).join("") : `<p class="sub">Todavía no hay movimientos en esta tarjeta.</p>`}</div>
-  </section>`;
-}
-
-function engancharSobre() {
-  const moverDesde = document.getElementById("mover-desde");
-  if (moverDesde) moverDesde.onclick = () => {
-    const otro = estado.sobres.find((y) => y.id !== estado.sobreAbierto && y.tipo === "gasto");
-    ir("mover", { mover: { de: estado.sobreAbierto, a: otro?.id, monto: 0 } });
-  };
-  engancharFilas();
-}
-
 function engancharFilas() {
   app.querySelectorAll("[data-mov]").forEach((el) => (el.onclick = () => {
-    const m = estado.movimientos.find((x) => x.id === el.dataset.mov) || estado.movsMes?.find((x) => x.id === el.dataset.mov);
+    const m = estado.movs.find((x) => x.id === el.dataset.mov) || estado.movsMes?.find((x) => x.id === el.dataset.mov);
     if (m) abrirAnotar(m);
   }));
 }
 
-/* ---------- Mover plata entre tarjetas ---------- */
-
-function vistaMover() {
-  const mv = estado.mover;
-  const s = saldos();
-  const opciones = estado.sobres.filter((x) => x.tipo === "gasto");
-  const de = sobreDe(mv.de), a = sobreDe(mv.a);
-  const max = Math.max(0, s[mv.de] || 0);
-  const sel = (id, nombre) => `<select id="${nombre}" class="selector">${opciones.map((x) => `<option value="${x.id}" ${x.id === id ? "selected" : ""}>${esc(x.nombre)} · ${pesos(s[x.id])}</option>`).join("")}</select>`;
+function vistaTarjeta() {
+  const c = sobreDe(estado.tarjetaAbierta);
+  if (!c) { estado.vista = "tarjetas"; return vistaTarjetas(); }
+  const d = datosTarjeta(c);
+  const h = hoy0();
+  const top = Object.entries(d.lista.reduce((r, m) => { const k = m.descripcion || "Sin descripción"; r[k] = (r[k] || 0) + m.monto; return r; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const p = pct(d.total, d.antes);
+  const promedio = d.total / h.getDate();
   return `
   <section class="pantalla inicio">
-    <button class="volver" data-vista="inicio">← Billetera</button>
-    <h1>Mover plata</h1>
-    <div class="caja-mover" style="--c:${de?.color};--t:${letraDe(de?.color)}"><label for="de">De</label>${sel(mv.de, "de")}</div>
-    <div class="flecha num" id="flecha">↓ ${pesos(mv.monto)}</div>
-    <div class="caja-mover" style="--c:${a?.color};--t:${letraDe(a?.color)}"><label for="a">A</label>${sel(mv.a, "a")}</div>
-    <div class="campo">
-      <label for="monto-mover">¿Cuánto?</label>
-      <input id="monto-mover" class="grande" inputmode="decimal" value="${mv.monto ? pesos(mv.monto) : ""}" placeholder="$0">
-      <input id="rango-mover" type="range" min="0" max="${Math.max(max, 1000)}" step="1000" value="${Math.min(mv.monto, max)}" aria-label="Cuánto mover">
-      <span class="ayuda">En ${esc(de?.nombre || "")} hay ${pesos(max)}.</span>
+    <button class="volver" data-vista="tarjetas">← Tarjetas</button>
+    <div class="abierta" style="--c:${c.color};--t:${letraDe(c.color)}">
+      <div class="arriba"><span>${esc(c.nombre)}</span><span>${MESES[h.getMonth()]}</span></div>
+      <span class="monto">${pesos(d.total)}</span>
+      ${c.presupuesto > 0 ? `<div class="barrita"><i style="width:${Math.min(100, Math.round((d.total / c.presupuesto) * 100))}%"></i></div><small>${pesos(Math.max(0, c.presupuesto - d.total))} libres de tu tope de ${pesos(c.presupuesto)}</small>` : `<small>${d.lista.length} ${d.lista.length === 1 ? "gasto" : "gastos"} · ${pesos(promedio)} por día en promedio</small>`}
     </div>
-    <div class="nota" id="nota-mover"></div>
-    <div class="acciones"><button class="boton" id="hacer-mover">Mover</button></div>
+    <div class="baldosas">
+      <div class="baldosa"><span>${MESES[(h.getMonth() + 11) % 12]} a esta fecha</span><b class="num">${pesos(d.antes)}</b></div>
+      <div class="baldosa"><span>Diferencia</span><b class="num ${d.antes ? (p > 0 ? "sube" : "entra") : ""}">${d.antes ? (p > 0 ? "↑" : "↓") + Math.abs(p) + " %" : "—"}</b></div>
+    </div>
+    ${top.length ? `<div class="campo"><span class="etiqueta">En lo que más gastas aquí</span><div class="top-desc">${top.map(([k, v]) => `<span><b>${esc(k)}</b>${pesos(v)}</span>`).join("")}</div></div>` : ""}
+    <div class="fila">
+      <button class="boton" data-anotar="${c.id}">Anotar aquí</button>
+      <button class="boton claro" id="tope">${c.presupuesto > 0 ? "Cambiar tope" : "Ponerle tope"}</button>
+    </div>
+    <h3 class="titulo-lista">Este mes</h3>
+    <div class="lista-movs">${d.lista.length ? d.lista.map(filaMovimiento).join("") : `<p class="sub vacio-lista">Todavía no hay gastos en esta tarjeta.</p>`}</div>
   </section>`;
 }
 
-function engancharMover() {
-  const mv = estado.mover;
-  const s = saldos();
-  const quedan = diasQuedan();
-  const input = document.getElementById("monto-mover");
-  const rango = document.getElementById("rango-mover");
-  const pintar = () => {
-    const de = sobreDe(mv.de), a = sobreDe(mv.a);
-    const queda = (s[mv.de] || 0) - mv.monto;
-    document.getElementById("flecha").textContent = "↓ " + pesos(mv.monto);
-    const nota = document.getElementById("nota-mover");
-    const boton = document.getElementById("hacer-mover");
-    boton.textContent = mv.monto ? `Mover ${pesos(mv.monto)}` : "Mover";
-    if (mv.de === mv.a) { nota.textContent = "Escoge dos tarjetas distintas."; boton.disabled = true; return; }
-    if (!mv.monto) { nota.textContent = "Escribe cuánto o mueve la barra."; boton.disabled = true; return; }
-    if (queda < 0) { nota.textContent = `En ${de.nombre} no hay tanto: máximo ${pesos(Math.max(0, s[mv.de]))}.`; boton.disabled = true; return; }
-    boton.disabled = false;
-    nota.textContent = de.tipo === "gasto"
-      ? `${de.nombre} queda en ${pesos(queda)}: ${pesos(porDia(queda, quedan))} por día.${queda / quedan < 5000 ? " Es justo, pero se puede." : ""}`
-      : `${de.nombre} queda en ${pesos(queda)}. ${a.nombre} sube a ${pesos((s[mv.a] || 0) + mv.monto)}.`;
+function engancharTarjeta() {
+  const c = sobreDe(estado.tarjetaAbierta);
+  engancharFilas();
+  document.getElementById("tope").onclick = () => abrirHoja(`
+    <h2>Tope para ${esc(c.nombre)}</h2>
+    <p class="sub">Es opcional. Si lo pones, Luka te avisa cuando vayas por el 80 %.</p>
+    ${campoMonto("to-monto", "Máximo al mes", c.presupuesto)}
+    <div class="acciones"><button class="boton" id="to-ok">Guardar</button>${c.presupuesto ? `<button class="boton claro" id="to-quitar">Quitar tope</button>` : ""}<button class="boton texto" data-cerrar>Cancelar</button></div>`,
+    (hoja) => {
+      const input = formatearAlSalir(hoja, "to-monto");
+      const guardar = async (valor) => {
+        const { error } = await sb.from("sobres").update({ presupuesto: valor }).eq("id", c.id);
+        if (error) return toast("No se pudo guardar.");
+        await cargarTodo(); cerrarHoja(); pintarApp(); toast(valor ? "Tope guardado" : "Tope quitado");
+      };
+      hoja.querySelector("#to-ok").onclick = () => guardar(leerMonto(input.value));
+      const quitar = hoja.querySelector("#to-quitar");
+      if (quitar) quitar.onclick = () => guardar(0);
+    });
+}
+
+function vistaAjustar() {
+  return `
+  <section class="pantalla inicio">
+    <button class="volver" data-vista="tarjetas">← Tarjetas</button>
+    <h1>Ajustar tarjetas</h1>
+    <p class="sub">Cámbiales el nombre, ponles un tope opcional o crea tarjetas nuevas.</p>
+    <div class="lista-ajuste">
+      ${categorias().map((x) => `
+      <div class="ajuste" style="--c:${x.color}">
+        <i></i>
+        <input data-nombre="${x.id}" value="${esc(x.nombre)}" aria-label="Nombre de la tarjeta">
+        <input data-presu="${x.id}" class="num" inputmode="decimal" value="${x.presupuesto ? pesos(x.presupuesto) : ""}" placeholder="Sin tope" aria-label="Tope de ${esc(x.nombre)}">
+        ${x.tipo === "fijo" ? "<span></span>" : `<button class="quitar" data-archivar="${x.id}" aria-label="Quitar ${esc(x.nombre)}">×</button>`}
+      </div>`).join("")}
+    </div>
+    <button class="boton claro" id="nueva-tarjeta">+ Nueva tarjeta</button>
+    <div class="acciones"><button class="boton" id="guardar-ajuste">Guardar</button></div>
+  </section>`;
+}
+
+function engancharAjustar() {
+  app.querySelectorAll("[data-presu]").forEach((el) => (el.onblur = () => { const n = leerMonto(el.value); el.value = n ? pesos(n) : ""; }));
+  app.querySelectorAll("[data-archivar]").forEach((b) => (b.onclick = async () => {
+    if (!b.dataset.seguro) { b.dataset.seguro = "1"; b.textContent = "¿?"; toast("Toca otra vez para quitarla. Sus gastos se quedan."); return; }
+    await sb.from("sobres").update({ archivado: true }).eq("id", b.dataset.archivar);
+    await cargarTodo(); pintarApp();
+  }));
+  document.getElementById("nueva-tarjeta").onclick = async () => {
+    const usados = new Set(estado.sobres.map((x) => x.color));
+    const color = COLORES_EXTRA.find((c) => !usados.has(c)) || COLORES_EXTRA[0];
+    const { error } = await sb.from("sobres").insert({ nombre: "Nueva", tipo: "gasto", color, presupuesto: 0, orden: 15 });
+    if (error) return toast("No se pudo crear.");
+    await cargarTodo(); pintarApp();
+    const inputs = app.querySelectorAll("[data-nombre]");
+    const ultimo = [...inputs].find((i) => i.value === "Nueva");
+    ultimo?.select();
   };
-  input.oninput = () => { mv.monto = leerMonto(input.value); rango.value = mv.monto; pintar(); };
-  input.onblur = () => { if (mv.monto) input.value = pesos(mv.monto); };
-  rango.oninput = () => { mv.monto = +rango.value; input.value = pesos(mv.monto); pintar(); };
-  document.getElementById("de").onchange = (e) => { mv.de = e.target.value; ir("mover"); };
-  document.getElementById("a").onchange = (e) => { mv.a = e.target.value; ir("mover"); };
-  document.getElementById("hacer-mover").onclick = async (e) => {
+  document.getElementById("guardar-ajuste").onclick = async (e) => {
     e.currentTarget.disabled = true;
-    const de = sobreDe(mv.de), a = sobreDe(mv.a);
-    const ok = await guardarMovimiento({ tipo: "traslado", monto: mv.monto, sobre_id: mv.de, sobre_destino_id: mv.a, descripcion: `${de.nombre} → ${a.nombre}` });
-    if (ok) { toast(`Listo: ${pesos(mv.monto)} de ${de.nombre} a ${a.nombre}`); ir("inicio"); }
-    else e.currentTarget.disabled = false;
+    const res = await Promise.all(categorias().map((x) => sb.from("sobres").update({
+      nombre: (app.querySelector(`[data-nombre="${x.id}"]`).value.trim() || x.nombre).slice(0, 30),
+      presupuesto: leerMonto(app.querySelector(`[data-presu="${x.id}"]`).value),
+    }).eq("id", x.id)));
+    if (res.some((r) => r.error)) { toast("No se pudo guardar todo."); e.currentTarget.disabled = false; return; }
+    await cargarTodo();
+    toast("Tarjetas guardadas");
+    ir("tarjetas");
   };
-  pintar();
 }
 
 /* ---------- Anotar (hoja que sube) ---------- */
+
+// Palabras que delatan la tarjeta de un gasto
+const PISTAS = {
+  Comida: /almuerzo|desayuno|cena|comida|corrientazo|rappi|domicilio|mercado|d1|ara|olimpica|olímpica|éxito|exito|tinto|caf[eé]|perro|hamburguesa|pizza|empanada|arepa|fruta|panader|snack|gaseosa|pollo|restaurante|onces|merienda/,
+  Transporte: /gasolina|bus|buseta|transmetro|taxi|uber|didi|indriver|picap|moto|parqueadero|peaje|pasaje|metro|sitp|tanqueo/,
+  Salidas: /cine|rumba|cerveza|trago|discoteca|bar\b|fiesta|concierto|partido|estadio|salida|paseo|playa|plan|novia/,
+  Compras: /ropa|zapato|tenis|camisa|aseo|champ|desodorante|regalo|tecnolog|cargador|audífono|audifono|celular nuevo/,
+  Estudio: /fotocopia|libro|útil|util|cuaderno|curso|matr[ií]cula|universidad|impresi/,
+  Salud: /droguer|medicina|pastilla|cita|m[eé]dico|gimnasio|gym|odont/,
+  Suscripciones: /netflix|spotify|disney|hbo|prime|youtube|plan celular|internet|icloud|app/,
+};
+
+function sobrePorPista(texto) {
+  const t = (texto || "").toLowerCase();
+  for (const c of categorias()) if (c.tipo === "fijo" && estado.fijos.some((f) => f.nombre.toLowerCase() === t)) return c.id;
+  for (const [nombre, re] of Object.entries(PISTAS)) {
+    if (re.test(t)) { const s = categorias().find((x) => x.nombre === nombre); if (s) return s.id; }
+  }
+  return null;
+}
 
 async function guardarMovimiento(fila, id = null) {
   const q = id ? sb.from("movimientos").update(fila).eq("id", id) : sb.from("movimientos").insert(fila);
@@ -915,18 +1051,23 @@ async function guardarMovimiento(fila, id = null) {
   return true;
 }
 
-function fechaLocal(d) {
-  const z = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
+function campoMonto(id, etiqueta, valor, ayuda = "") {
+  return `<div class="campo"><label for="${id}">${etiqueta}</label><input id="${id}" class="grande" inputmode="decimal" value="${valor ? pesos(valor) : ""}" placeholder="$0" autocomplete="off">${ayuda ? `<span class="ayuda" id="${id}-ayuda">${ayuda}</span>` : ""}</div>`;
+}
+function formatearAlSalir(hoja, id) {
+  const el = hoja.querySelector("#" + id);
+  el.onblur = () => { const n = leerMonto(el.value); if (n) el.value = pesos(n); };
+  return el;
 }
 
 function abrirAnotar(previo = {}) {
   const editando = !!previo.id;
-  if (["traslado", "abono", "retiro"].includes(previo.tipo)) {
+  if (["traslado", "abono", "retiro"].includes(previo.tipo) || previo.origen === "ajuste") {
+    const titulos = { traslado: "Movida entre tarjetas", abono: "Ahorro para una meta", retiro: "Plata sacada del ahorro" };
     return abrirHoja(`
-      <h2>${{ traslado: "Movida entre tarjetas", abono: "Abono a meta", retiro: "Plata sacada de una meta" }[previo.tipo]}</h2>
+      <h2>${previo.origen === "ajuste" ? "Ajuste de saldo" : titulos[previo.tipo]}</h2>
       <p class="sub">${esc(previo.descripcion)} · ${pesos(previo.monto)}</p>
-      <div class="acciones"><button class="boton peligro" id="borrar">Deshacer esta movida</button><button class="boton texto" data-cerrar>Cerrar</button></div>`,
+      <div class="acciones"><button class="boton peligro" id="borrar">Deshacer</button><button class="boton texto" data-cerrar>Cerrar</button></div>`,
       (hoja) => engancharBorrar(hoja, previo));
   }
   const f = {
@@ -939,8 +1080,19 @@ function abrirAnotar(previo = {}) {
     elegidoAMano: !!previo.sobre_id,
   };
   const hoy = fechaLocal(new Date());
-  const ayer = fechaLocal(new Date(Date.now() - 864e5));
-  const deGasto = estado.sobres.filter((x) => x.tipo !== "ahorro");
+  const ayer = fechaLocal(sumaDias(hoy0(), -1));
+  const miPago = estado.perfil.ingreso_por_pago;
+
+  const chipsDescripcion = () => {
+    if (f.tipo === "ingreso") return [
+      ...(miPago ? [`<button type="button" class="chip" data-desc="Quincena" data-monto="${miPago}">Mi pago · ${pesos(miPago)}</button>`] : []),
+      ...OPCIONES_INGRESO.map((o) => `<button type="button" class="chip suave" data-desc="${esc(o)}" aria-pressed="${f.descripcion === o}">${esc(o)}</button>`),
+    ].join("");
+    const cat = sobreDe(f.sobre_id);
+    if (!cat) return `<span class="sub">Escoge primero la tarjeta y te muestro opciones.</span>`;
+    const ops = descripcionesDe(cat);
+    return ops.length ? ops.map((o) => `<button type="button" class="chip suave" data-desc="${esc(o)}" aria-pressed="${f.descripcion === o}">${esc(o)}</button>`).join("") : `<span class="sub">Escribe abajo qué fue.</span>`;
+  };
 
   abrirHoja(`
     <div class="pestanas" role="tablist">
@@ -951,13 +1103,14 @@ function abrirAnotar(previo = {}) {
       <label for="a-monto">¿Cuánto?</label>
       <input id="a-monto" class="grande" inputmode="decimal" placeholder="Ej: 15k" value="${f.monto ? pesos(f.monto) : ""}" autocomplete="off">
     </div>
-    <div class="campo">
-      <label for="a-desc">${f.tipo === "gasto" ? "¿En qué?" : "¿De dónde?"}</label>
-      <input id="a-desc" placeholder="${f.tipo === "gasto" ? "Ej: almuerzo, gasolina, Rappi" : "Ej: quincena, venta, regalo"}" value="${esc(f.descripcion)}" autocomplete="off">
-    </div>
     <div class="campo" id="bloque-sobre" ${f.tipo === "ingreso" ? "hidden" : ""}>
-      <span class="etiqueta">¿De qué tarjeta sale?</span>
-      <div class="chips-sobre">${deGasto.map((x) => `<button type="button" class="chip-sobre" data-sobre="${x.id}" style="--c:${x.color};--t:${letraDe(x.color)}" aria-pressed="${x.id === f.sobre_id}">${esc(x.nombre)}</button>`).join("")}</div>
+      <span class="etiqueta">¿En qué tarjeta?</span>
+      <div class="chips-sobre">${categorias().map((x) => `<button type="button" class="chip-sobre" data-sobre="${x.id}" style="--c:${x.color};--t:${letraDe(x.color)}" aria-pressed="${x.id === f.sobre_id}">${esc(x.nombre)}</button>`).join("")}</div>
+    </div>
+    <div class="campo">
+      <span class="etiqueta" id="eti-desc">${f.tipo === "gasto" ? "¿Qué fue?" : "¿De dónde?"}</span>
+      <div class="chips" id="chips-desc">${chipsDescripcion()}</div>
+      <input id="a-desc" placeholder="${f.tipo === "gasto" ? "O escribe otra cosa" : "O escribe de dónde"}" value="${esc(f.descripcion)}" autocomplete="off" aria-labelledby="eti-desc">
     </div>
     <div class="campo">
       <span class="etiqueta">¿Cómo?</span>
@@ -979,47 +1132,57 @@ function abrirAnotar(previo = {}) {
     </div>`,
     (hoja) => {
       const $ = (id) => hoja.querySelector("#" + id);
+      const pintarChips = () => {
+        $("chips-desc").innerHTML = chipsDescripcion();
+        hoja.querySelectorAll("[data-desc]").forEach((b) => (b.onclick = () => {
+          f.descripcion = b.dataset.desc; $("a-desc").value = f.descripcion;
+          if (b.dataset.monto && !leerMonto($("a-monto").value)) { f.monto = +b.dataset.monto; $("a-monto").value = pesos(f.monto); }
+          hoja.querySelectorAll("[data-desc]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+        }));
+      };
       const marcarSobre = () => hoja.querySelectorAll("[data-sobre]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.sobre === f.sobre_id)));
+      pintarChips();
       hoja.querySelectorAll("[data-tipo]").forEach((b) => (b.onclick = () => {
         f.tipo = b.dataset.tipo;
-        f.monto = leerMonto($("a-monto").value); f.descripcion = $("a-desc").value;
+        f.monto = leerMonto($("a-monto").value); f.descripcion = "";
+        $("a-desc").value = "";
         hoja.querySelectorAll("[data-tipo]").forEach((t) => t.setAttribute("aria-selected", String(t === b)));
         $("bloque-sobre").hidden = f.tipo === "ingreso";
-        hoja.querySelector('label[for="a-desc"]').textContent = f.tipo === "gasto" ? "¿En qué?" : "¿De dónde?";
-        $("a-desc").placeholder = f.tipo === "gasto" ? "Ej: almuerzo, gasolina, Rappi" : "Ej: quincena, venta, regalo";
+        $("eti-desc").textContent = f.tipo === "gasto" ? "¿Qué fue?" : "¿De dónde?";
+        $("a-desc").placeholder = f.tipo === "gasto" ? "O escribe otra cosa" : "O escribe de dónde";
+        pintarChips();
       }));
       $("a-monto").oninput = () => { f.monto = leerMonto($("a-monto").value); };
       $("a-monto").onblur = () => { if (f.monto) $("a-monto").value = pesos(f.monto); };
       $("a-desc").oninput = () => {
         f.descripcion = $("a-desc").value;
-        if (!f.elegidoAMano) { const p = sobrePorPista(f.descripcion); if (p) { f.sobre_id = p; marcarSobre(); } }
+        if (f.tipo === "gasto" && !f.elegidoAMano) { const p = sobrePorPista(f.descripcion); if (p && p !== f.sobre_id) { f.sobre_id = p; marcarSobre(); } }
       };
-      hoja.querySelectorAll("[data-sobre]").forEach((b) => (b.onclick = () => { f.sobre_id = b.dataset.sobre; f.elegidoAMano = true; marcarSobre(); }));
+      hoja.querySelectorAll("[data-sobre]").forEach((b) => (b.onclick = () => { f.sobre_id = b.dataset.sobre; f.elegidoAMano = true; marcarSobre(); pintarChips(); }));
       hoja.querySelectorAll("[data-metodo]").forEach((b) => (b.onclick = () => { f.metodo = b.dataset.metodo; hoja.querySelectorAll("[data-metodo]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
       const marcarFecha = () => hoja.querySelectorAll("[data-fecha]").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.fecha === f.fecha)));
       hoja.querySelectorAll("[data-fecha]").forEach((b) => (b.onclick = () => { f.fecha = b.dataset.fecha; $("a-fecha").value = f.fecha; marcarFecha(); }));
       $("a-fecha").onchange = () => { f.fecha = $("a-fecha").value || hoy; marcarFecha(); };
       $("a-guardar").onclick = async () => {
         const err = $("a-error");
-        f.monto = leerMonto($("a-monto").value); f.descripcion = $("a-desc").value.trim();
+        f.monto = leerMonto($("a-monto").value);
+        f.descripcion = $("a-desc").value.trim();
         f.descripcion = f.descripcion.charAt(0).toUpperCase() + f.descripcion.slice(1);
-        const falta = !f.monto ? "Escribe cuánto fue." : f.tipo === "gasto" && !f.sobre_id ? "Escoge de qué tarjeta sale." : "";
+        if (f.tipo === "gasto" && !f.sobre_id) f.sobre_id = sobrePorPista(f.descripcion);
+        const falta = !f.monto ? "Escribe cuánto fue." : f.tipo === "gasto" && !f.sobre_id ? "Escoge en qué tarjeta va." : "";
         if (falta) { err.textContent = falta; err.hidden = false; return; }
         $("a-guardar").disabled = true;
         const cuando = f.fecha === hoy ? (editando && fechaLocal(new Date(previo.fecha)) === hoy ? previo.fecha : new Date().toISOString()) : new Date(f.fecha + "T12:00:00").toISOString();
-        const fila = { tipo: f.tipo, monto: f.monto, descripcion: f.descripcion, metodo: f.metodo, sobre_id: f.tipo === "gasto" ? f.sobre_id : null, fecha: cuando };
+        const fila = { tipo: f.tipo, monto: f.monto, descripcion: f.descripcion || (f.tipo === "gasto" ? sobreDe(f.sobre_id).nombre : "Ingreso"), metodo: f.metodo, sobre_id: f.tipo === "gasto" ? f.sobre_id : null, fecha: cuando };
         const ok = await guardarMovimiento(fila, previo.id || null);
         if (!ok) { $("a-guardar").disabled = false; return; }
         cerrarHoja();
         estado.movsMes = null;
         pintarApp();
+        const plan = planDelDia();
         if (editando) toast("Cambios guardados");
-        else if (f.tipo === "ingreso") toast(`Anotado: te entraron ${pesos(f.monto)}`);
-        else {
-          const x = sobreDe(f.sobre_id);
-          const quedo = saldos()[f.sobre_id];
-          toast(quedo < 0 ? `Anotado. ${x.nombre} quedó en −${pesos(-quedo)}` : `Anotado. A ${x.nombre} le quedan ${pesos(quedo)}`);
-        }
+        else if (f.tipo === "ingreso") toast(`Anotado. Ahora tienes ${pesos(estado.saldo)}.`);
+        else toast(plan.quedaHoy >= 0 ? `Anotado. Hoy te quedan ${pesos(plan.quedaHoy)}.` : `Anotado. Hoy te pasaste ${pesos(-plan.quedaHoy)}.`);
       };
       if (editando) engancharBorrar(hoja, previo);
       if (!editando) setTimeout(() => $("a-monto").focus(), 250);
@@ -1070,21 +1233,19 @@ function cerrarHoja(ya = false) {
 
 function vistaMovimientos() {
   const mes = estado.mesVisto || inicioDeMes();
+  const fin = new Date(mes.getFullYear(), mes.getMonth() + 1, 1);
+  const enRango = mes >= (estado.desde || inicioDeMes());
+  const lista = enRango ? estado.movs.filter(entre(mes, fin)) : estado.movsMes;
   const esActual = mes.getTime() === inicioDeMes().getTime();
-  const lista = esActual ? estado.movimientos : estado.movsMes;
   const filtro = estado.filtroMov || "todo";
   if (!lista) return `<section class="pantalla inicio"><p class="sub">Cargando…</p></section>`;
   const vis = lista.filter((m) => filtro === "todo" || m.tipo === filtro || (filtro === "ahorro" && (m.tipo === "abono" || m.tipo === "retiro")));
-  const gastos = lista.filter((m) => m.tipo === "gasto").reduce((t, m) => t + m.monto, 0);
-  const ingresos = lista.filter((m) => m.tipo === "ingreso").reduce((t, m) => t + m.monto, 0);
+  const gastos = suma(lista.filter((m) => m.tipo === "gasto" && cuenta(m)));
+  const ingresos = suma(lista.filter((m) => m.tipo === "ingreso" && cuenta(m)));
 
   const grupos = {};
-  for (const m of vis) {
-    const d = new Date(m.fecha);
-    const k = fechaLocal(d);
-    (grupos[k] ||= { d, items: [] }).items.push(m);
-  }
-  const hoy = fechaLocal(new Date()), ayer = fechaLocal(new Date(Date.now() - 864e5));
+  for (const m of vis) { const d = new Date(m.fecha); (grupos[fechaLocal(d)] ||= { d, items: [] }).items.push(m); }
+  const hoy = fechaLocal(new Date()), ayer = fechaLocal(sumaDias(hoy0(), -1));
   const titulo = (k, d) => (k === hoy ? "Hoy" : k === ayer ? "Ayer" : `${DIAS[d.getDay()]} ${d.getDate()}`);
 
   return `
@@ -1094,12 +1255,12 @@ function vistaMovimientos() {
       <h1>${MESES[mes.getMonth()][0].toUpperCase() + MESES[mes.getMonth()].slice(1)}${mes.getFullYear() !== new Date().getFullYear() ? " " + mes.getFullYear() : ""}</h1>
       <button class="flechita" id="mes-sig" aria-label="Mes siguiente" ${esActual ? "disabled" : ""}>›</button>
     </div>
-    <div class="totales">
-      <div><span class="sub">Gastaste</span><b class="num">${pesos(gastos)}</b></div>
-      <div><span class="sub">Te entró</span><b class="num entra">${pesos(ingresos)}</b></div>
+    <div class="baldosas">
+      <div class="baldosa"><span>Te entró</span><b class="num entra">${pesos(ingresos)}</b></div>
+      <div class="baldosa"><span>Gastaste</span><b class="num">${pesos(gastos)}</b></div>
     </div>
     <div class="chips" role="tablist">
-      ${[["todo", "Todo"], ["gasto", "Gastos"], ["ingreso", "Ingresos"], ["traslado", "Movidas"], ["ahorro", "Ahorro"]].map(([v, t]) => `<button class="chip suave" role="tab" data-filtro="${v}" aria-pressed="${filtro === v}">${t}</button>`).join("")}
+      ${[["todo", "Todo"], ["gasto", "Gastos"], ["ingreso", "Ingresos"], ["ahorro", "Ahorro"]].map(([v, t]) => `<button class="chip suave" role="tab" data-filtro="${v}" aria-pressed="${filtro === v}">${t}</button>`).join("")}
     </div>
     ${vis.length ? Object.entries(grupos).map(([k, g]) => `<div class="dia">${titulo(k, g.d)}</div><div class="lista-movs">${g.items.map(filaMovimiento).join("")}</div>`).join("")
       : `<div class="vacio-chico"><p class="sub">${lista.length ? "Nada con ese filtro." : "Todavía no hay nada anotado este mes."}</p>${esActual ? `<button class="boton" data-anotar>Anotar el primero</button>` : ""}</div>`}
@@ -1113,7 +1274,7 @@ function engancharMovimientos() {
     estado.mesVisto = nuevo;
     estado.movsMes = null;
     pintarApp();
-    if (nuevo.getTime() !== inicioDeMes().getTime()) {
+    if (nuevo < estado.desde) {
       const fin = new Date(nuevo.getFullYear(), nuevo.getMonth() + 1, 1);
       const { data, error } = await sb.from("movimientos").select("*").gte("fecha", nuevo.toISOString()).lt("fecha", fin.toISOString()).order("fecha", { ascending: false });
       if (error) { toast("No pude cargar ese mes."); return; }
@@ -1127,125 +1288,61 @@ function engancharMovimientos() {
   engancharFilas();
 }
 
-/* ---------- Ajustar sobres ---------- */
-
-function vistaAjustar() {
-  const editables = estado.sobres.filter((x) => x.tipo !== "fijo");
-  const libre = Math.round(estado.perfil.ingreso_por_pago * PAGOS_AL_MES[estado.perfil.frecuencia]) - estado.fijos.reduce((t, f) => t + f.monto, 0);
-  return `
-  <section class="pantalla inicio">
-    <button class="volver" data-vista="yo">← Yo</button>
-    <h1>Mis tarjetas</h1>
-    <p class="sub">Cuánto le toca a cada una al mes. Te quedan ${pesos(Math.max(0, libre))} después de los fijos.</p>
-    <div class="lista-ajuste">
-      ${editables.map((x) => `
-      <div class="ajuste" style="--c:${x.color}">
-        <i></i>
-        <input data-nombre="${x.id}" value="${esc(x.nombre)}" aria-label="Nombre de la tarjeta">
-        <input data-presu="${x.id}" class="num" inputmode="decimal" value="${pesos(x.presupuesto)}" aria-label="Presupuesto de ${esc(x.nombre)}">
-      </div>`).join("")}
-    </div>
-    <div class="saldo-reparto" id="saldo-ajuste"></div>
-    <button class="boton claro" id="nueva-tarjeta">+ Nueva tarjeta</button>
-    <div class="acciones"><button class="boton" id="guardar-ajuste">Guardar</button></div>
-  </section>`;
-}
-
-function engancharAjustar() {
-  const libre = Math.round(estado.perfil.ingreso_por_pago * PAGOS_AL_MES[estado.perfil.frecuencia]) - estado.fijos.reduce((t, f) => t + f.monto, 0);
-  const total = () => [...app.querySelectorAll("[data-presu]")].reduce((t, el) => t + leerMonto(el.value), 0);
-  const pintar = () => {
-    const queda = libre - total();
-    const el = document.getElementById("saldo-ajuste");
-    el.className = "saldo-reparto" + (queda < 0 ? " malo" : "");
-    el.innerHTML = queda < 0 ? `<span>Repartiste más de lo que te entra</span><span class="num">${pesos(-queda)}</span>` : `<span>Sin repartir</span><span class="num">${pesos(queda)}</span>`;
-  };
-  app.querySelectorAll("[data-presu]").forEach((el) => { el.oninput = pintar; el.onblur = () => { el.value = pesos(leerMonto(el.value)); }; });
-  pintar();
-  document.getElementById("nueva-tarjeta").onclick = async () => {
-    const usados = new Set(estado.sobres.map((x) => x.color));
-    const color = ["#7a5bb5", "#d9822b", "#2a8fa8", "#b54a7f", "#5d7a2f"].find((c) => !usados.has(c)) || "#7a5bb5";
-    const { error } = await sb.from("sobres").insert({ nombre: "Nueva", tipo: "gasto", color, presupuesto: 0, orden: estado.sobres.length });
-    if (error) return toast("No se pudo crear.");
-    await cargarTodo();
-    pintarApp();
-  };
-  document.getElementById("guardar-ajuste").onclick = async (e) => {
-    e.currentTarget.disabled = true;
-    const cambios = estado.sobres.filter((x) => x.tipo !== "fijo").map((x) => ({
-      id: x.id,
-      nombre: (app.querySelector(`[data-nombre="${x.id}"]`).value.trim() || x.nombre).slice(0, 30),
-      presupuesto: leerMonto(app.querySelector(`[data-presu="${x.id}"]`).value),
-    }));
-    const res = await Promise.all(cambios.map((c) => sb.from("sobres").update({ nombre: c.nombre, presupuesto: c.presupuesto }).eq("id", c.id)));
-    for (const c of cambios) { const m = metaDe(c.id); if (m) res.push(await sb.from("metas").update({ aporte_mensual: c.presupuesto, nombre: c.nombre }).eq("id", m.id)); }
-    if (res.some((r) => r.error)) { toast("No se pudo guardar todo."); e.currentTarget.disabled = false; return; }
-    await cargarTodo();
-    toast("Tarjetas guardadas");
-    ir("inicio");
-  };
-}
-
-/* ---------- Metas ---------- */
-
-const metaPorId = (id) => estado.metas.find((m) => m.id === id);
-const metaDe = (sobreId) => estado.metas.find((m) => m.sobre_id === sobreId && !m.lograda);
-const COLORES_META = ["#2f4fb5", "#1f8a8a", "#9a4fb5", "#b5762f", "#3f6fb5"];
+/* ---------- Metas y deudas ---------- */
 
 // Cuándo se cumple una meta al ritmo del aporte mensual
 function proyeccion(m) {
   const falta = m.objetivo - m.ahorrado;
   if (falta <= 0) return { texto: "¡Ya la tienes completa!", listo: true };
-  if (!m.aporte_mensual) return { texto: "Sin aporte mensual no hay fecha. Ponle cuánto al mes en Editar." };
+  if (!m.aporte_mensual) return { texto: "Ponle cuánto al mes y te digo cuándo llegas." };
   const meses = Math.ceil(falta / m.aporte_mensual);
   const d = new Date(); d.setMonth(d.getMonth() + meses);
-  let texto = `A este ritmo llegas en ${MESES[d.getMonth()]} de ${d.getFullYear()}`;
+  let texto = `Llegas en ${MESES[d.getMonth()]} de ${d.getFullYear()}`;
   if (m.fecha_objetivo) {
     const [a, mes] = m.fecha_objetivo.split("-").map(Number);
     const hoy = new Date();
     const quedan = Math.max(1, (a - hoy.getFullYear()) * 12 + (mes - 1 - hoy.getMonth()));
-    const necesita = Math.ceil(falta / quedan / 1000) * 1000;
-    texto += d <= new Date(a, mes - 1, 28) ? ", a tiempo." : `. Para ${MESES[mes - 1]} necesitas ${pesos(necesita)} al mes.`;
-  } else {
-    const mas = Math.ceil(m.aporte_mensual * 0.25 / 1000) * 1000;
-    const meses2 = Math.ceil(falta / (m.aporte_mensual + mas));
-    if (meses2 < meses) { const d2 = new Date(); d2.setMonth(d2.getMonth() + meses2); texto += `. Si le subes ${pesos(mas)} al mes, en ${MESES[d2.getMonth()]} de ${d2.getFullYear()}.`; }
-    else texto += ".";
-  }
+    texto += d <= new Date(a, mes - 1, 28) ? ", a tiempo." : `. Para ${MESES[mes - 1]} necesitas ${pesos(Math.ceil(falta / quedan / 1000) * 1000)} al mes.`;
+  } else texto += ".";
   return { texto };
 }
 
 function vistaMetas() {
-  const s = saldos();
-  const activas = estado.metas.filter((m) => !m.lograda);
+  const activas = metasActivas();
   const logradas = estado.metas.filter((m) => m.lograda);
+  const pendientes = estado.deudas.filter((d) => !d.pagada);
   const tieneEmergencias = estado.metas.some((m) => /emergencia/i.test(m.nombre));
-  const gastoMes = estado.sobres.filter((x) => x.tipo !== "ahorro").reduce((t, x) => t + x.presupuesto, 0);
+  const gastoMes = Math.round(suma(gastosEntre(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1), inicioDeMes())) || estado.perfil.ingreso_por_pago * PAGOS_AL_MES[estado.perfil.frecuencia]);
+  const ahorradoTotal = activas.reduce((t, m) => t + m.ahorrado, 0);
   return `
   <section class="pantalla inicio">
-    <h1>Mis metas</h1>
-    ${activas.length ? activas.map((m) => {
-      const x = sobreDe(m.sobre_id);
-      const pct = Math.min(100, Math.round((m.ahorrado / m.objetivo) * 100));
+    <h1>Metas</h1>
+    ${activas.length ? `<div class="baldosas"><div class="baldosa"><span>Ahorrado</span><b class="num">${pesos(ahorradoTotal)}</b></div><div class="baldosa"><span>Tienes libre</span><b class="num">${pesos(estado.saldo)}</b></div></div>` : ""}
+    ${activas.map((m) => {
       const p = proyeccion(m);
-      const porAbonar = x ? Math.max(0, s[x.id]) : 0;
+      const pc = Math.min(100, Math.round((m.ahorrado / m.objetivo) * 100));
       return `
-      <article class="meta" style="--c:${x?.color || "#2f4fb5"}">
-        <div class="meta-cab"><h2>${esc(m.nombre)}</h2><span class="num">${pct} %</span></div>
-        <div class="meta-cifra"><b class="num">${pesos(m.ahorrado)}</b><span class="sub">de ${pesos(m.objetivo)}</span></div>
-        <div class="meta-barra"><i style="width:${pct}%"></i></div>
+      <article class="meta">
+        <div class="meta-cab"><div class="meta-anillo">${anillo(m.ahorrado, m.objetivo, "var(--azul)")}<span class="num">${pc}%</span></div>
+          <div><h2>${esc(m.nombre)}</h2><span class="sub"><b class="num">${pesos(m.ahorrado)}</b> de ${pesos(m.objetivo)}</span></div></div>
         <p class="sub">${p.texto}</p>
-        ${porAbonar ? `<p class="por-abonar">Este mes tienes ${pesos(porAbonar)} apartados para esta meta.</p>` : ""}
         <div class="fila">
-          ${p.listo ? `<button class="boton" data-lograda="${m.id}">¡La logré!</button>` : `<button class="boton" data-abonar="${m.id}">Abonar</button>`}
+          ${p.listo ? `<button class="boton" data-lograda="${m.id}">¡La logré!</button>` : `<button class="boton" data-abonar="${m.id}">Guardar plata</button>`}
           <button class="boton claro" data-sacar="${m.id}" ${m.ahorrado ? "" : "disabled"}>Sacar</button>
           <button class="boton claro icono" data-editar-meta="${m.id}" aria-label="Editar ${esc(m.nombre)}">✎</button>
         </div>
       </article>`;
-    }).join("") : `<div class="vacio-chico"><p class="sub">No tienes metas todavía. Con una meta es más fácil no gastarse todo.</p></div>`}
-    ${!tieneEmergencias && gastoMes ? `<div class="nota"><b>Te recomiendo un fondo para emergencias</b>Lo ideal es tener guardado un mes de gastos (${pesos(gastoMes)}) por si algo pasa: se daña el celular, te enfermas o te quedas sin trabajo.<br><button class="chip" id="crear-emergencias" style="margin-top:8px">Crear fondo de emergencias</button></div>` : ""}
+    }).join("") || `<p class="sub">No tienes metas todavía. Con una meta es más fácil no gastarse todo.</p>`}
+    ${!tieneEmergencias && gastoMes ? `<div class="sug verde ancha"><span class="sug-ico">${simbolo("meta")}</span><b>Fondo de emergencias</b><span class="sug-txt">Lo ideal es tener guardado un mes de gastos: ${pesos(gastoMes)}.</span><button class="sug-btn" id="crear-emergencias">Crear</button></div>` : ""}
     <button class="boton claro" id="nueva-meta">+ Nueva meta</button>
-    ${logradas.length ? `<h3 class="titulo-lista">Logradas</h3><div class="lista-movs">${logradas.map((m) => `<div class="mov"><i style="background:var(--verde)"></i><span class="txt">${esc(m.nombre)}<small>${pesos(m.objetivo)}</small></span><span class="num entra">✓</span></div>`).join("")}</div>` : ""}
+
+    <div class="titulo-fila"><h2>Deudas</h2><button class="chip" id="nueva-deuda">+ Deuda</button></div>
+    ${pendientes.length ? `<div class="lista-movs">${pendientes.map((d) => {
+      const f = d.fecha_limite ? new Date(d.fecha_limite + "T00:00:00") : null;
+      return `<div class="mov deuda"><i style="background:var(--error)"></i><button class="txt" data-editar-deuda="${d.id}">${esc(d.descripcion)}<small>${f ? `Vence ${cuandoTxt(f)}` : "Sin fecha"}</small></button><span class="num">${pesos(d.monto)}</span><button class="chip" data-pagar-deuda="${d.id}">Pagar</button></div>`;
+    }).join("")}</div>` : `<p class="sub">No debes nada. Si le debes a alguien o tienes una cuota, anótala y te aviso antes de que venza.</p>`}
+
+    ${logradas.length ? `<h3 class="titulo-lista">Metas logradas</h3><div class="lista-movs">${logradas.map((m) => `<div class="mov"><i style="background:var(--verde)"></i><span class="txt">${esc(m.nombre)}<small>${pesos(m.objetivo)}</small></span><span class="num entra">✓</span></div>`).join("")}</div>` : ""}
   </section>`;
 }
 
@@ -1253,96 +1350,73 @@ function engancharMetas() {
   app.querySelectorAll("[data-abonar]").forEach((b) => (b.onclick = () => abrirAbono(metaPorId(b.dataset.abonar))));
   app.querySelectorAll("[data-sacar]").forEach((b) => (b.onclick = () => abrirRetiro(metaPorId(b.dataset.sacar))));
   app.querySelectorAll("[data-editar-meta]").forEach((b) => (b.onclick = () => abrirMeta(metaPorId(b.dataset.editarMeta))));
+  app.querySelectorAll("[data-editar-deuda]").forEach((b) => (b.onclick = () => abrirDeuda(estado.deudas.find((d) => d.id === b.dataset.editarDeuda))));
   app.querySelectorAll("[data-lograda]").forEach((b) => (b.onclick = async () => {
     const m = metaPorId(b.dataset.lograda);
     b.disabled = true;
     await sb.from("metas").update({ lograda: true }).eq("id", m.id);
-    if (m.sobre_id) await sb.from("sobres").update({ archivado: true }).eq("id", m.sobre_id);
     await cargarTodo();
     pintarApp();
     toast(`¡Felicitaciones! Lograste «${m.nombre}».`);
   }));
   document.getElementById("nueva-meta").onclick = () => abrirMeta();
+  document.getElementById("nueva-deuda").onclick = () => abrirDeuda();
   const em = document.getElementById("crear-emergencias");
   if (em) em.onclick = () => {
-    const gastoMes = estado.sobres.filter((x) => x.tipo !== "ahorro").reduce((t, x) => t + x.presupuesto, 0);
-    abrirMeta({ nombre: "Fondo de emergencias", objetivo: gastoMes });
+    const gastoMes = Math.round(suma(gastosEntre(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1), inicioDeMes())) || estado.perfil.ingreso_por_pago * PAGOS_AL_MES[estado.perfil.frecuencia]);
+    abrirMeta({ nombre: "Fondo de emergencias", objetivo: redondear(gastoMes) });
   };
+  engancharSugerencias(app);
 }
 
-function campoMonto(id, etiqueta, valor, ayuda = "") {
-  return `<div class="campo"><label for="${id}">${etiqueta}</label><input id="${id}" class="grande" inputmode="decimal" value="${valor ? pesos(valor) : ""}" placeholder="$0" autocomplete="off">${ayuda ? `<span class="ayuda" id="${id}-ayuda">${ayuda}</span>` : ""}</div>`;
-}
-function formatearAlSalir(hoja, id) {
-  const el = hoja.querySelector("#" + id);
-  el.onblur = () => { const n = leerMonto(el.value); if (n) el.value = pesos(n); };
-  return el;
-}
-
-function abrirAbono(meta, desdeId = null) {
-  const s = saldos();
-  const ahorro = sobreDe(meta.sobre_id);
-  const opciones = estado.sobres.filter((x) => x.tipo === "gasto" || x.id === meta.sobre_id);
-  let desde = desdeId || (ahorro && s[ahorro.id] > 0 ? ahorro.id : opciones.find((x) => s[x.id] > 0)?.id || opciones[0]?.id);
-  const sugerido = Math.max(0, Math.min(s[desde] || 0, meta.objetivo - meta.ahorrado));
+function abrirAbono(meta) {
+  const sugerido = Math.min(redondear((meta.aporte_mensual || 0) / PAGOS_AL_MES[estado.perfil.frecuencia]), meta.objetivo - meta.ahorrado, Math.max(0, estado.saldo));
   abrirHoja(`
-    <h2>Abonar a ${esc(meta.nombre)}</h2>
-    <p class="sub">Llevas ${pesos(meta.ahorrado)} de ${pesos(meta.objetivo)}.</p>
-    ${campoMonto("ab-monto", "¿Cuánto?", sugerido)}
-    <div class="campo"><span class="etiqueta">¿De qué tarjeta sale?</span>
-      <div class="chips-sobre">${opciones.map((x) => `<button type="button" class="chip-sobre" data-desde="${x.id}" style="--c:${x.color};--t:${letraDe(x.color)}" aria-pressed="${x.id === desde}">${esc(x.nombre)} · ${pesos(s[x.id])}</button>`).join("")}</div>
-    </div>
+    <h2>Guardar para ${esc(meta.nombre)}</h2>
+    <p class="sub">Llevas ${pesos(meta.ahorrado)} de ${pesos(meta.objetivo)}. Tienes ${pesos(estado.saldo)} libres.</p>
+    ${campoMonto("ab-monto", "¿Cuánto guardas?", sugerido)}
     <div class="aviso-error" id="ab-error" hidden></div>
-    <div class="acciones"><button class="boton" id="ab-ok">Abonar</button><button class="boton texto" data-cerrar>Cancelar</button></div>`,
+    <div class="acciones"><button class="boton" id="ab-ok">Guardar</button><button class="boton texto" data-cerrar>Cancelar</button></div>`,
     (hoja) => {
       const monto = formatearAlSalir(hoja, "ab-monto");
-      hoja.querySelectorAll("[data-desde]").forEach((b) => (b.onclick = () => { desde = b.dataset.desde; hoja.querySelectorAll("[data-desde]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
       hoja.querySelector("#ab-ok").onclick = async (e) => {
         const n = leerMonto(monto.value), err = hoja.querySelector("#ab-error");
-        const falta = !n ? "Escribe cuánto vas a abonar." : n > Math.max(0, s[desde]) ? `En ${sobreDe(desde).nombre} solo hay ${pesos(Math.max(0, s[desde]))}.` : "";
+        const falta = !n ? "Escribe cuánto vas a guardar." : n > Math.max(0, estado.saldo) ? `Solo tienes ${pesos(Math.max(0, estado.saldo))} libres.` : "";
         if (falta) { err.textContent = falta; err.hidden = false; return; }
         e.currentTarget.disabled = true;
-        const ok = await guardarMovimiento({ tipo: "abono", monto: n, sobre_id: desde, meta_id: meta.id, descripcion: `Abono a ${meta.nombre}` });
+        const ok = await guardarMovimiento({ tipo: "abono", monto: n, meta_id: meta.id, descripcion: `Ahorro para ${meta.nombre}` });
         if (!ok) { e.currentTarget.disabled = false; return; }
         cerrarHoja();
-        estado.vista = "metas";
         pintarApp();
         const m = metaPorId(meta.id);
-        toast(m.ahorrado >= m.objetivo ? `¡Completaste «${m.nombre}»!` : `Abonado. Llevas ${pesos(m.ahorrado)} de ${pesos(m.objetivo)}.`);
+        toast(m.ahorrado >= m.objetivo ? `¡Completaste «${m.nombre}»!` : `Guardado. Llevas ${pesos(m.ahorrado)} de ${pesos(m.objetivo)}.`);
       };
     });
 }
 
-function abrirRetiro(meta, aId = null) {
-  const gasto = estado.sobres.filter((x) => x.tipo === "gasto");
-  let a = aId || gasto.find((x) => x.nombre === "Otros")?.id || gasto[0]?.id;
+function abrirRetiro(meta) {
   abrirHoja(`
     <h2>Sacar de ${esc(meta.nombre)}</h2>
-    <p class="sub">Tienes ${pesos(meta.ahorrado)} ahorrados. Lo que saques pasa a una tarjeta para gastarlo.</p>
+    <p class="sub">Tienes ${pesos(meta.ahorrado)} guardados. Lo que saques vuelve a tu saldo para gastarlo.</p>
     ${campoMonto("re-monto", "¿Cuánto?", 0)}
-    <div class="campo"><span class="etiqueta">¿A qué tarjeta?</span>
-      <div class="chips-sobre">${gasto.map((x) => `<button type="button" class="chip-sobre" data-a="${x.id}" style="--c:${x.color};--t:${letraDe(x.color)}" aria-pressed="${x.id === a}">${esc(x.nombre)}</button>`).join("")}</div>
-    </div>
     <div class="aviso-error" id="re-error" hidden></div>
     <div class="acciones"><button class="boton" id="re-ok">Sacar</button><button class="boton texto" data-cerrar>Cancelar</button></div>`,
     (hoja) => {
       const monto = formatearAlSalir(hoja, "re-monto");
-      hoja.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => { a = b.dataset.a; hoja.querySelectorAll("[data-a]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }));
       hoja.querySelector("#re-ok").onclick = async (e) => {
         const n = leerMonto(monto.value), err = hoja.querySelector("#re-error");
         const falta = !n ? "Escribe cuánto vas a sacar." : n > meta.ahorrado ? `Solo tienes ${pesos(meta.ahorrado)} en la meta.` : "";
         if (falta) { err.textContent = falta; err.hidden = false; return; }
         e.currentTarget.disabled = true;
-        const ok = await guardarMovimiento({ tipo: "retiro", monto: n, sobre_destino_id: a, meta_id: meta.id, descripcion: `Sacado de ${meta.nombre}` });
+        const ok = await guardarMovimiento({ tipo: "retiro", monto: n, meta_id: meta.id, descripcion: `Sacado de ${meta.nombre}` });
         if (!ok) { e.currentTarget.disabled = false; return; }
         cerrarHoja();
         pintarApp();
-        toast(`Listo: ${pesos(n)} pasaron a ${sobreDe(a).nombre}.`);
+        toast(`Listo: ${pesos(n)} volvieron a tu saldo.`);
       };
     });
 }
 
-// Crear o editar una meta. Cada meta tiene su tarjeta de ahorro con el aporte del mes.
 function abrirMeta(meta = null) {
   const editando = !!meta?.id;
   const m = { nombre: meta?.nombre || "", objetivo: meta?.objetivo || 0, ahorrado: meta?.ahorrado || 0, fecha: meta?.fecha_objetivo?.slice(0, 7) || "", aporte: meta?.aporte_mensual || 0 };
@@ -1354,7 +1428,7 @@ function abrirMeta(meta = null) {
       ${editando ? "" : campoMonto("me-ya", "¿Ya tienes algo?", m.ahorrado)}
     </div>
     <div class="campo"><label for="me-fecha">¿Para cuándo? <span class="sub">(opcional)</span></label><input id="me-fecha" type="month" value="${esc(m.fecha)}"></div>
-    ${campoMonto("me-aporte", "¿Cuánto le metes al mes?", m.aporte, "Sale de lo que te entra, como una tarjeta más.")}
+    ${campoMonto("me-aporte", "¿Cuánto le quieres meter al mes?", m.aporte, "Luka te recuerda guardarlo cuando te entre plata.")}
     <div class="aviso-error" id="me-error" hidden></div>
     <div class="acciones">
       <button class="boton" id="me-ok">${editando ? "Guardar" : "Crear meta"}</button>
@@ -1371,7 +1445,7 @@ function abrirMeta(meta = null) {
           const [a, mes] = f.split("-").map(Number), hoy = new Date();
           const meses = Math.max(1, (a - hoy.getFullYear()) * 12 + (mes - 1 - hoy.getMonth()));
           ayuda.textContent = `Para llegar a tiempo necesitas ${pesos(Math.ceil((obj - ya) / meses / 1000) * 1000)} al mes.`;
-        } else ayuda.textContent = "Sale de lo que te entra, como una tarjeta más.";
+        } else ayuda.textContent = "Luka te recuerda guardarlo cuando te entre plata.";
       };
       ["me-obj", "me-ya", "me-fecha"].forEach((id) => $(id) && $(id).addEventListener("input", sugerir));
       sugerir();
@@ -1381,34 +1455,148 @@ function abrirMeta(meta = null) {
         const falta = !nombre ? "Ponle nombre a la meta." : !objetivo ? "Escribe cuánto cuesta." : "";
         if (falta) { $("me-error").textContent = falta; $("me-error").hidden = false; return; }
         e.currentTarget.disabled = true;
-        let error;
-        if (editando) {
-          ({ error } = await sb.from("metas").update({ nombre, objetivo, aporte_mensual: aporte, fecha_objetivo: fecha ? fecha + "-01" : null }).eq("id", meta.id));
-          if (!error && meta.sobre_id) ({ error } = await sb.from("sobres").update({ nombre, presupuesto: aporte }).eq("id", meta.sobre_id));
-        } else {
-          const usados = new Set(estado.sobres.map((x) => x.color));
-          const color = COLORES_META.find((c) => !usados.has(c)) || COLORES_META[0];
-          const { data: sobre, error: e1 } = await sb.from("sobres").insert({ nombre, tipo: "ahorro", color, presupuesto: aporte, orden: 50 + estado.sobres.length }).select().single();
-          error = e1;
-          if (!error) ({ error } = await sb.from("metas").insert({ nombre, objetivo, ahorrado: ya, aporte_mensual: aporte, fecha_objetivo: fecha ? fecha + "-01" : null, sobre_id: sobre.id }));
-        }
+        const datos = { nombre, objetivo, aporte_mensual: aporte, fecha_objetivo: fecha ? fecha + "-01" : null };
+        const { error } = editando ? await sb.from("metas").update(datos).eq("id", meta.id) : await sb.from("metas").insert({ ...datos, ahorrado: ya });
         if (error) { $("me-error").textContent = "No se pudo guardar. Revisa el internet."; $("me-error").hidden = false; e.currentTarget.disabled = false; return; }
         await cargarTodo();
         cerrarHoja();
         estado.vista = "metas";
         pintarApp();
-        toast(editando ? "Meta guardada" : `Meta creada. Ya tienes su tarjeta en la billetera.`);
+        toast(editando ? "Meta guardada" : "Meta creada");
       };
       const borrar = $("me-borrar");
       if (borrar) borrar.onclick = async () => {
-        if (!borrar.dataset.seguro) { borrar.dataset.seguro = "1"; borrar.textContent = meta.ahorrado ? `Se borra con lo ahorrado (${pesos(meta.ahorrado)}). Toca otra vez` : "¿Seguro? Toca otra vez"; return; }
+        if (!borrar.dataset.seguro) { borrar.dataset.seguro = "1"; borrar.textContent = meta.ahorrado ? `Lo ahorrado (${pesos(meta.ahorrado)}) vuelve a tu saldo. Toca otra vez` : "¿Seguro? Toca otra vez"; return; }
         borrar.disabled = true;
+        if (meta.ahorrado) await sb.from("movimientos").insert({ tipo: "retiro", monto: meta.ahorrado, meta_id: meta.id, descripcion: `Sacado de ${meta.nombre}` });
         await sb.from("metas").delete().eq("id", meta.id);
-        if (meta.sobre_id) await sb.from("sobres").update({ archivado: true }).eq("id", meta.sobre_id);
         await cargarTodo();
         cerrarHoja();
         pintarApp();
         toast("Meta borrada");
+      };
+    });
+}
+
+function abrirDeuda(deuda = null) {
+  const editando = !!deuda;
+  abrirHoja(`
+    <h2>${editando ? "Editar deuda" : "Nueva deuda"}</h2>
+    <div class="campo"><label for="de-desc">¿Qué debes?</label><input id="de-desc" value="${esc(deuda?.descripcion || "")}" placeholder="Ej: Cuota del celular, préstamo de Juan" autocomplete="off"></div>
+    ${campoMonto("de-monto", "¿Cuánto?", deuda?.monto || 0)}
+    <div class="campo"><label for="de-fecha">¿Para cuándo? <span class="sub">(opcional)</span></label><input id="de-fecha" type="date" value="${deuda?.fecha_limite || ""}"></div>
+    <div class="aviso-error" id="de-error" hidden></div>
+    <div class="acciones">
+      <button class="boton" id="de-ok">Guardar</button>
+      ${editando ? `<button class="boton peligro" id="de-borrar">Borrar</button>` : ""}
+      <button class="boton texto" data-cerrar>Cancelar</button>
+    </div>`,
+    (hoja) => {
+      const $ = (id) => hoja.querySelector("#" + id);
+      formatearAlSalir(hoja, "de-monto");
+      $("de-ok").onclick = async (e) => {
+        const datos = { descripcion: $("de-desc").value.trim(), monto: leerMonto($("de-monto").value), fecha_limite: $("de-fecha").value || null };
+        if (!datos.descripcion || !datos.monto) { $("de-error").textContent = "Escribe qué debes y cuánto."; $("de-error").hidden = false; return; }
+        e.currentTarget.disabled = true;
+        const { error } = editando ? await sb.from("deudas").update(datos).eq("id", deuda.id) : await sb.from("deudas").insert(datos);
+        if (error) { toast("No se pudo guardar."); e.currentTarget.disabled = false; return; }
+        await cargarTodo(); cerrarHoja(); pintarApp(); toast("Deuda guardada");
+      };
+      const borrar = $("de-borrar");
+      if (borrar) borrar.onclick = async () => {
+        if (!borrar.dataset.seguro) { borrar.dataset.seguro = "1"; borrar.textContent = "¿Seguro? Toca otra vez"; return; }
+        await sb.from("deudas").delete().eq("id", deuda.id);
+        await cargarTodo(); cerrarHoja(); pintarApp(); toast("Deuda borrada");
+      };
+    });
+}
+
+/* ---------- Yo ---------- */
+
+function vistaYo() {
+  const p = estado.perfil;
+  const frec = { mensual: "Cada mes", quincenal: "Cada quincena", semanal: "Cada semana", variable: "Varía" }[p.frecuencia];
+  const dias = p.frecuencia === "semanal" ? (p.dias_pago[0] != null ? "los " + DIAS_PLURAL[p.dias_pago[0]] : "") : p.dias_pago.length ? "días " + p.dias_pago.join(" y ") : "";
+  return `
+  <section class="pantalla inicio">
+    <button class="volver" data-vista="inicio">← Inicio</button>
+    <h1>${esc(p.nombre || "Tú")}</h1>
+    <div>
+      <div class="yo-dato"><span>Correo</span><span>${esc(estado.usuario.email)}</span></div>
+      <div class="yo-dato"><span>Te pagan</span><span>${frec}${dias ? ", " + dias : ""}</span></div>
+      <div class="yo-dato"><span>${p.frecuencia === "variable" ? "Al mes" : "Por pago"}</span><span class="num">${pesos(p.ingreso_por_pago)}</span></div>
+      <div class="yo-dato"><span>Saldo</span><span class="num">${pesos(estado.saldo)}</span></div>
+    </div>
+    <div class="fila"><button class="boton claro" id="editar-pago">Mi pago</button><button class="boton claro" id="corregir-saldo">Corregir saldo</button></div>
+    <div class="titulo-fila"><h2>Gastos fijos</h2><button class="chip" id="nuevo-fijo">+ Fijo</button></div>
+    ${estado.fijos.length ? `<div class="lista-movs">${estado.fijos.map((f) => `<button class="mov" data-fijo="${f.id}"><i style="background:${COLOR_FIJOS}"></i><span class="txt">${esc(f.nombre)}<small>${f.dia_mes ? "día " + f.dia_mes : "sin día"}</small></span><span class="num">${pesos(f.monto)}</span></button>`).join("")}</div>` : `<p class="sub">No tienes gastos fijos.</p>`}
+    <h2 class="titulo-lista">Avisos</h2>
+    <div id="caja-avisos" class="caja-avisos"><p class="sub">Revisando…</p></div>
+    <button class="boton claro" id="ir-gmail">Conectar Gmail del banco</button>
+    <button class="boton texto" id="salir">Cerrar sesión</button>
+  </section>`;
+}
+
+function engancharYo() {
+  document.getElementById("salir").onclick = () => sb.auth.signOut();
+  document.getElementById("ir-gmail").onclick = () => ir("gmail");
+  document.getElementById("corregir-saldo").onclick = abrirSaldo;
+  document.getElementById("editar-pago").onclick = abrirPago;
+  document.getElementById("nuevo-fijo").onclick = () => abrirFijo();
+  app.querySelectorAll("[data-fijo]").forEach((b) => (b.onclick = () => abrirFijo(estado.fijos.find((f) => f.id === b.dataset.fijo))));
+  pintarAvisos();
+}
+
+function abrirPago() {
+  const b = { frecuencia: estado.perfil.frecuencia, dias: [...estado.perfil.dias_pago], ingreso: estado.perfil.ingreso_por_pago };
+  if (!b.dias.length) b.dias = [...DIAS_DEFECTO[b.frecuencia]];
+  const pintar = (hoja) => {
+    hoja.querySelector("#pago-cuerpo").innerHTML = `
+      <div class="chips">${[["quincenal", "Quincena"], ["mensual", "Mes"], ["semanal", "Semana"], ["variable", "Varía"]].map(([v, t]) => `<button type="button" class="chip suave" data-frec="${v}" aria-pressed="${b.frecuencia === v}">${t}</button>`).join("")}</div>
+      ${selectorDias(b)}
+      ${campoMonto("pa-monto", b.frecuencia === "variable" ? "¿Cuánto te entra al mes?" : "¿Cuánto te llega en cada pago?", b.ingreso)}`;
+    formatearAlSalir(hoja, "pa-monto");
+    const leer = () => { b.ingreso = leerMonto(hoja.querySelector("#pa-monto").value); hoja.querySelectorAll(".dia-pago").forEach((el) => (b.dias[+el.dataset.i] = Math.min(31, Math.max(1, parseInt(el.value, 10) || 1)))); };
+    hoja.querySelectorAll("[data-frec]").forEach((el) => (el.onclick = () => { leer(); b.frecuencia = el.dataset.frec; b.dias = [...DIAS_DEFECTO[b.frecuencia]]; pintar(hoja); }));
+    hoja.querySelectorAll("[data-dia-semana]").forEach((el) => (el.onclick = () => { leer(); b.dias = [+el.dataset.diaSemana]; pintar(hoja); }));
+    hoja._leer = leer;
+  };
+  abrirHoja(`<h2>Mi pago</h2><div id="pago-cuerpo" class="opciones"></div>
+    <div class="acciones"><button class="boton" id="pa-ok">Guardar</button><button class="boton texto" data-cerrar>Cancelar</button></div>`,
+    (hoja) => {
+      pintar(hoja);
+      hoja.querySelector("#pa-ok").onclick = async () => {
+        hoja._leer();
+        const { error } = await sb.from("perfiles").update({ frecuencia: b.frecuencia, dias_pago: b.dias, ingreso_por_pago: b.ingreso }).eq("id", estado.usuario.id);
+        if (error) return toast("No se pudo guardar.");
+        await cargarTodo(); cerrarHoja(); pintarApp(); toast("Guardado");
+      };
+    });
+}
+
+function abrirFijo(fijo = null) {
+  abrirHoja(`
+    <h2>${fijo ? "Editar gasto fijo" : "Nuevo gasto fijo"}</h2>
+    <div class="campo"><label for="fi-nombre">¿Qué es?</label><input id="fi-nombre" value="${esc(fijo?.nombre || "")}" placeholder="Ej: Arriendo, plan celular" autocomplete="off"></div>
+    <div class="fila">${campoMonto("fi-monto", "¿Cuánto?", fijo?.monto || 0)}
+      <div class="campo"><label for="fi-dia">Día del mes</label><input id="fi-dia" inputmode="numeric" value="${fijo?.dia_mes || ""}" placeholder="1-31"></div></div>
+    <div class="acciones"><button class="boton" id="fi-ok">Guardar</button>${fijo ? `<button class="boton peligro" id="fi-borrar">Borrar</button>` : ""}<button class="boton texto" data-cerrar>Cancelar</button></div>`,
+    (hoja) => {
+      const $ = (id) => hoja.querySelector("#" + id);
+      formatearAlSalir(hoja, "fi-monto");
+      $("fi-ok").onclick = async () => {
+        const datos = { nombre: $("fi-nombre").value.trim(), monto: leerMonto($("fi-monto").value), dia_mes: Math.min(31, parseInt($("fi-dia").value, 10) || 0) || null };
+        if (!datos.nombre || !datos.monto) return toast("Escribe qué es y cuánto.");
+        const { error } = fijo ? await sb.from("gastos_fijos").update(datos).eq("id", fijo.id) : await sb.from("gastos_fijos").insert(datos);
+        if (error) return toast("No se pudo guardar.");
+        if (!estado.sobres.some((s) => s.tipo === "fijo")) await sb.from("sobres").insert({ nombre: "Fijos", tipo: "fijo", color: COLOR_FIJOS, presupuesto: 0, orden: 10 });
+        await cargarTodo(); cerrarHoja(); pintarApp(); toast("Gasto fijo guardado");
+      };
+      const borrar = $("fi-borrar");
+      if (borrar) borrar.onclick = async () => {
+        if (!borrar.dataset.seguro) { borrar.dataset.seguro = "1"; borrar.textContent = "¿Seguro? Toca otra vez"; return; }
+        await sb.from("gastos_fijos").update({ activo: false }).eq("id", fijo.id);
+        await cargarTodo(); cerrarHoja(); pintarApp(); toast("Gasto fijo borrado");
       };
     });
 }
@@ -1644,9 +1832,7 @@ function burbuja(m, i) {
   const x = m.extra || {};
   const tarjetas = (x.tarjetas || []).map((t) => `<div class="mini" style="--c:${t.color};--t:${letraDe(t.color)}"><span>${esc(t.nombre)} · ${esc(t.descripcion)}</span><span class="num">${t.tipo === "ingreso" ? "+" : "−"}${pesos(t.monto)}</span></div>`).join("");
   const lineas = (x.lineas || []).map((l) => `<span class="linea">${esc(l)}</span>`).join("");
-  const mover = (x.mover || []).map((p, j) => p.hecho
-    ? `<span class="hecho">Movidos ${pesos(p.monto)} de ${esc(p.de)} a ${esc(p.a)}</span>`
-    : `<button class="chip" data-proponer="${i}:${j}">Mover ${pesos(p.monto)} de ${esc(p.de)} a ${esc(p.a)}</button>`).join("");
+  const mover = (x.mover || []).filter((p) => p.hecho).map((p) => `<span class="hecho">Movidos ${pesos(p.monto)} de ${esc(p.de)} a ${esc(p.a)}</span>`).join("");
   const botones = i === estado.chat.length - 1 ? (x.botones || []).map((b) => `<button class="chip suave" data-decir="${esc(b)}">${esc(b)}</button>`).join("") : "";
   const globo = m.texto || lineas ? `<div class="msg luka">${esc(m.texto)}${m.texto && lineas ? "<br>" : ""}${lineas}</div>` : "";
   return `${m.texto.endsWith(":") ? globo + tarjetas : tarjetas + globo}${mover || botones ? `<div class="chips acciones-msg">${mover}${botones}</div>` : ""}`;
@@ -1682,7 +1868,6 @@ function engancharLuka() {
   const input = document.getElementById("texto-chat");
   document.getElementById("redactar").onsubmit = (e) => { e.preventDefault(); decir(input.value); };
   app.querySelectorAll("[data-decir]").forEach((b) => (b.onclick = () => decir(b.dataset.decir)));
-  app.querySelectorAll("[data-proponer]").forEach((b) => (b.onclick = () => hacerPropuesta(b)));
   if (!estado.pensando && matchMedia("(pointer: fine)").matches) input.focus();
 }
 
@@ -1710,7 +1895,7 @@ async function decir(texto) {
     const resp = await fetch(LUKA_CHAT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ mensaje: texto, historial }),
+      body: JSON.stringify({ mensaje: texto, historial, resumen: resumenParaLuka() }),
     });
     r = await resp.json();
     if (!resp.ok) throw new Error(r.error || "error");
@@ -1744,77 +1929,49 @@ async function decir(texto) {
       return;
     }
     await cargarTodo();
-    const s = saldos(), quedan = diasQuedan();
+    const plan = planDelDia(), ini = inicioDeMes(), man = sumaDias(hoy0(), 1);
     for (const id of [...new Set(filas.filter((f) => f.sobre_id).map((f) => f.sobre_id))]) {
       const x = sobreDe(id);
-      if (x.tipo === "fijo") { lineas.push(`Quedó en Fijos.`); continue; }
-      lineas.push(s[id] < 0 ? `Ojo: ${x.nombre} quedó en −${pesos(-s[id])}.` : `A ${x.nombre} le quedan ${pesos(s[id])} (${pesos(porDia(s[id], quedan))} por día).`);
+      lineas.push(`Llevas ${pesos(suma(gastosEntre(ini, man).filter((m) => m.sobre_id === id)))} en ${x.nombre} este mes.`);
     }
-    const entro = filas.filter((f) => f.tipo === "ingreso").reduce((t, f) => t + f.monto, 0);
-    if (entro) lineas.push(`Te entraron ${pesos(entro)}. Este mes van ${pesos(estado.movimientos.filter((m) => m.tipo === "ingreso").reduce((t, m) => t + m.monto, 0))}.`);
+    if (filas.some((f) => f.tipo === "gasto")) lineas.push(plan.quedaHoy >= 0 ? `Hoy te quedan ${pesos(plan.quedaHoy)}.` : `Hoy te pasaste ${pesos(-plan.quedaHoy)}.`);
+    if (filas.some((f) => f.tipo === "ingreso")) lineas.push(`Ahora tienes ${pesos(estado.saldo)}.`);
   }
 
-  const mover = (r.mover || []).filter((p) => {
-    const de = tarjetaPorNombre(p.de), a = tarjetaPorNombre(p.a);
-    return de && a && de.id !== a.id && de.tipo === "gasto" && a.tipo === "gasto";
-  }).slice(0, 2);
   const textoLuka = r.respuesta || (filas.length ? (filas.length === 1 ? "Listo, anotado." : `Listo, anoté ${filas.length}.`) : "");
   estado.pensando = false;
-  await guardarMensaje("luka", textoLuka, { tarjetas, lineas, mover, botones: r.botones || [] });
+  await guardarMensaje("luka", textoLuka, { tarjetas, lineas, botones: r.botones || [] });
   pintarApp();
 }
 
-async function hacerPropuesta(boton) {
-  const [i, j] = boton.dataset.proponer.split(":").map(Number);
-  const m = estado.chat[i];
-  const p = m.extra.mover[j];
-  const de = tarjetaPorNombre(p.de), a = tarjetaPorNombre(p.a);
-  if (saldos()[de.id] < p.monto) return toast(`En ${de.nombre} ya no hay ${pesos(p.monto)}.`);
-  boton.disabled = true;
-  const ok = await guardarMovimiento({ tipo: "traslado", monto: p.monto, sobre_id: de.id, sobre_destino_id: a.id, descripcion: `${de.nombre} → ${a.nombre}` });
-  if (!ok) { boton.disabled = false; return; }
-  p.hecho = true;
-  if (!String(m.id).startsWith("tmp-")) await sb.from("mensajes").update({ extra: m.extra }).eq("id", m.id);
-  toast(`Listo: ${pesos(p.monto)} de ${de.nombre} a ${a.nombre}`);
-  pintarApp();
+// Lo que Luka necesita saber de tu plata, con las cuentas ya hechas aquí
+function resumenParaLuka() {
+  const h = hoy0(), ini = inicioDeMes(), man = sumaDias(h, 1);
+  const iniAnt = new Date(h.getFullYear(), h.getMonth() - 1, 1);
+  const plan = planDelDia();
+  const g = gastosEntre(ini, man), gAnt = gastosEntre(iniAnt, ini);
+  const lun = lunesDe(h);
+  return [
+    `Saldo disponible ahora: ${pesos(estado.saldo)}.`,
+    `Próximo pago: ${fechaLocal(plan.pago)} (${cuandoTxt(plan.pago)}), de unos ${pesos(estado.perfil.ingreso_por_pago)}. Le pagan: ${estado.perfil.frecuencia}.`,
+    `Puede gastar por día hasta el pago: ${pesos(plan.porDia)}. Hoy gastó ${pesos(plan.gastadoHoy)}; ${plan.quedaHoy >= 0 ? `le quedan ${pesos(plan.quedaHoy)} hoy` : `se pasó ${pesos(-plan.quedaHoy)} hoy`}.`,
+    `Fijos pendientes antes del pago: ${plan.fijosAntes.map((f) => `${f.nombre} ${pesos(f.monto)} (día ${f.dia_mes})`).join(", ") || "ninguno"}.`,
+    `Esta semana gastó ${pesos(suma(gastosEntre(lun, man)))}. Este mes: entró ${pesos(suma(ingresosEntre(ini, man)))} y gastó ${pesos(suma(g))}. El mes pasado gastó ${pesos(suma(gAnt))} en total.`,
+    `Gastado este mes por tarjeta: ${categorias().map((c) => `${c.nombre} ${pesos(suma(g.filter((m) => m.sobre_id === c.id)))}${c.presupuesto ? ` (tope ${pesos(c.presupuesto)})` : ""} [mes pasado ${pesos(suma(gAnt.filter((m) => m.sobre_id === c.id)))}]`).join("; ")}.`,
+    `Metas: ${metasActivas().map((m) => `${m.nombre}: ${pesos(m.ahorrado)} de ${pesos(m.objetivo)}, aporta ${pesos(m.aporte_mensual)} al mes`).join("; ") || "ninguna"}.`,
+    `Deudas pendientes: ${estado.deudas.filter((d) => !d.pagada).map((d) => `${d.descripcion} ${pesos(d.monto)}${d.fecha_limite ? ` vence ${d.fecha_limite}` : ""}`).join("; ") || "ninguna"}.`,
+  ].join("\n");
 }
+/* ---------- Al volver a la app ---------- */
 
-/* ---------- Otras pestañas ---------- */
-
-function vistaPronto(titulo, texto, parte) {
-  return `<section class="pantalla vacio"><span class="paso">Parte ${parte} · en construcción</span><h2>${titulo}</h2><p class="sub">${texto}</p></section>`;
-}
-
-function vistaYo() {
-  const p = estado.perfil;
-  const frec = { mensual: "Cada mes", quincenal: "Cada quincena", semanal: "Cada semana", variable: "Varía" }[p.frecuencia];
-  return `
-  <section class="pantalla inicio">
-    <h1>${esc(p.nombre || "Tú")}</h1>
-    <div>
-      <div class="yo-dato"><span>Correo</span><span>${esc(estado.usuario.email)}</span></div>
-      <div class="yo-dato"><span>Te pagan</span><span>${frec}</span></div>
-      <div class="yo-dato"><span>${p.frecuencia === "variable" ? "Al mes" : "Por pago"}</span><span class="num">${pesos(p.ingreso_por_pago)}</span></div>
-      <div class="yo-dato"><span>Gastos fijos</span><span>${estado.fijos.length}</span></div>
-    </div>
-    <h3 class="titulo-lista">Avisos</h3>
-    <div id="caja-avisos" class="caja-avisos"><p class="sub">Revisando…</p></div>
-    <button class="boton" id="ir-ajustar">Ajustar mis tarjetas</button>
-    <button class="boton claro" id="ir-gmail">Conectar Gmail del banco</button>
-    <button class="boton claro" id="rehacer">Volver a hacer la bienvenida</button>
-    <button class="boton texto" id="salir">Cerrar sesión</button>
-  </section>`;
-}
-
-/* ---------- Instalable ---------- */
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-
-// Al volver a la app, traer lo nuevo (por ejemplo, lo que Luka anotó desde el correo)
+// Traer lo nuevo (por ejemplo, lo que Luka anotó desde el correo)
 document.addEventListener("visibilitychange", async () => {
   if (document.visibilityState !== "visible" || !estado.usuario || !estado.perfil?.bienvenida_lista) return;
-  if (document.querySelector(".fondo-hoja") || estado.pensando || estado.vista === "mover" || estado.vista === "ajustar") return;
+  if (document.querySelector(".fondo-hoja") || estado.pensando || estado.vista === "ajustar") return;
   try { await cargarTodo(); } catch { return; }
   estado.chat = null;
   estado.conexionGmail = undefined;
   if (!document.querySelector(".fondo-hoja")) pintarApp();
 });
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
