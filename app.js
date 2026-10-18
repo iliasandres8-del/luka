@@ -1028,7 +1028,7 @@ function abrirHoja(html, enganchar) {
   fondo.innerHTML = `<div class="hoja" role="dialog" aria-modal="true" aria-label="Anotar"><div class="agarre"></div>${html}</div>`;
   document.body.appendChild(fondo);
   document.body.classList.add("con-hoja");
-  requestAnimationFrame(() => fondo.classList.add("abierta"));
+  requestAnimationFrame(() => fondo.classList.add("visible"));
   fondo.addEventListener("click", (e) => { if (e.target === fondo || e.target.closest("[data-cerrar]")) cerrarHoja(); });
   const teclaEsc = (e) => { if (e.key === "Escape") cerrarHoja(); };
   document.addEventListener("keydown", teclaEsc);
@@ -1042,7 +1042,7 @@ function cerrarHoja(ya = false) {
   document.removeEventListener("keydown", fondo._esc);
   document.body.classList.remove("con-hoja");
   if (ya) return fondo.remove();
-  fondo.classList.remove("abierta");
+  fondo.classList.remove("visible");
   setTimeout(() => fondo.remove(), 220);
 }
 
