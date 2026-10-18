@@ -1648,7 +1648,8 @@ function burbuja(m, i) {
     ? `<span class="hecho">Movidos ${pesos(p.monto)} de ${esc(p.de)} a ${esc(p.a)}</span>`
     : `<button class="chip" data-proponer="${i}:${j}">Mover ${pesos(p.monto)} de ${esc(p.de)} a ${esc(p.a)}</button>`).join("");
   const botones = i === estado.chat.length - 1 ? (x.botones || []).map((b) => `<button class="chip suave" data-decir="${esc(b)}">${esc(b)}</button>`).join("") : "";
-  return `${tarjetas}${m.texto || lineas ? `<div class="msg luka">${esc(m.texto)}${m.texto && lineas ? "<br>" : ""}${lineas}</div>` : ""}${mover || botones ? `<div class="chips acciones-msg">${mover}${botones}</div>` : ""}`;
+  const globo = m.texto || lineas ? `<div class="msg luka">${esc(m.texto)}${m.texto && lineas ? "<br>" : ""}${lineas}</div>` : "";
+  return `${m.texto.endsWith(":") ? globo + tarjetas : tarjetas + globo}${mover || botones ? `<div class="chips acciones-msg">${mover}${botones}</div>` : ""}`;
 }
 
 function vistaLuka() {
