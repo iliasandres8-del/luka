@@ -35,7 +35,6 @@ const estado = {
 /* ---------- Utilidades ---------- */
 
 const pesos = (n) => "$" + Math.round(n || 0).toLocaleString("es-CO");
-const corto = (n) => (n >= 1000 ? Math.round(n / 1000).toLocaleString("es-CO") + "k" : String(n));
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const redondear = (n) => Math.max(0, Math.round(n / 1000) * 1000);
 
@@ -384,7 +383,7 @@ function pasoMeta(b) {
 // Reparto que propone Luka: primero ahorro, y lo demás entre comida, transporte, salidas y otros
 function proponerReparto(b) {
   const libre = Math.max(0, ingresoMensual(b) - totalFijos(b));
-  let ahorro = redondear(libre * (b.sinMeta ? 0.10 : 0.15));
+  let ahorro = redondear(libre * (b.sinMeta ? 0.10 : 0.20));
   if (!b.sinMeta && b.meta.fecha) {
     const [a, mes] = b.meta.fecha.split("-").map(Number);
     const hoy = new Date();
@@ -405,7 +404,7 @@ function proyeccionMeta(b, ahorroMes) {
   if (ahorroMes <= 0) return `Sin ahorrar nada al mes no llegas a tu meta «${esc(b.meta.nombre)}».`;
   const meses = Math.ceil(falta / ahorroMes);
   const d = new Date(); d.setMonth(d.getMonth() + meses);
-  let texto = `Ahorrando ${pesos(ahorroMes)} al mes, ${esc(b.meta.nombre.toLowerCase())} llega en <b>${MESES[d.getMonth()]} de ${d.getFullYear()}</b>`;
+  let texto = `Ahorrando ${pesos(ahorroMes)} al mes, tu meta «${esc(b.meta.nombre)}» se cumple en <strong>${MESES[d.getMonth()]} de ${d.getFullYear()}</strong>`;
   if (b.meta.fecha) {
     const [a, m] = b.meta.fecha.split("-").map(Number);
     const quiere = new Date(a, m - 1, 28);
@@ -561,7 +560,7 @@ function vistaInicio() {
   const nombre = estado.perfil?.nombre?.split(" ")[0] || "";
   const tarjetas = estado.sobres.filter((x) => x.tipo !== "fijo");
   const meta = estado.metas[0];
-  const alto = 96, paso = 52;
+  const alto = 96, paso = 50;
 
   const fijos = estado.sobres.find((x) => x.tipo === "fijo");
   const proximoFijo = estado.fijos.filter((f) => f.dia_mes && f.dia_mes >= d.getDate())[0];
@@ -577,11 +576,13 @@ function vistaInicio() {
       ${tarjetas.map((x, i) => {
         const saldo = s[x.id];
         const esAhorro = x.tipo === "ahorro";
-        const derecha = esAhorro && meta ? `${Math.round(((meta.ahorrado) / meta.objetivo) * 100)} % de la meta` : saldo <= 0 ? "agotado" : `de ${corto(x.presupuesto)}`;
-        const monto = esAhorro && meta ? `${pesos(meta.ahorrado)}` : pesos(saldo);
+        const monto = esAhorro && meta ? pesos(meta.ahorrado) : pesos(saldo);
+        const detalle = esAhorro
+          ? (meta ? `${Math.round((meta.ahorrado / meta.objetivo) * 100)} % de ${pesos(meta.objetivo)} · ` : "") + `${pesos(x.presupuesto)} al mes`
+          : saldo <= 0 ? `agotado · era ${pesos(x.presupuesto)}` : `de ${pesos(x.presupuesto)} · ${pesos(Math.floor(saldo / quedan / 50) * 50)} por día`;
         return `<button class="tarjeta" style="top:${i * paso}px;--c:${x.color};--t:${letraDe(x.color)}" aria-label="${esc(x.nombre)}: ${monto}">
-          <span><span class="nombre">${esAhorro && meta ? "Ahorro · " + esc(x.nombre) : esc(x.nombre)}</span><span class="monto">${monto}</span></span>
-          <span class="de">${esAhorro && meta ? derecha : derecha}${esAhorro ? `<br>${pesos(x.presupuesto)} al mes` : ""}</span>
+          <span class="arriba"><span class="nombre">${esAhorro && meta ? "Ahorro · " + esc(x.nombre) : esc(x.nombre)}</span><span class="monto">${monto}</span></span>
+          <span class="de">${detalle}</span>
         </button>`;
       }).join("")}
     </div>

@@ -158,16 +158,17 @@ button { cursor: pointer; }
 .tarjeta {
   position: absolute; left: 0; right: 0;
   height: 96px; border-radius: 18px; padding: 14px 16px;
-  display: flex; justify-content: space-between; align-items: flex-start;
+  display: flex; flex-direction: column; justify-content: space-between;
   border: 0; text-align: left; color: var(--t);
   background: var(--c);
   box-shadow: 0 -6px 16px rgba(20, 40, 30, .14);
   transition: transform .2s ease;
 }
 .tarjeta:active { transform: translateY(-4px); }
-.tarjeta .nombre { font-size: .88rem; font-weight: 600; }
-.tarjeta .monto { display: block; font-family: var(--display); font-weight: 800; font-size: 1.35rem; margin-top: 2px; }
-.tarjeta .de { font-size: .8rem; opacity: .9; text-align: right; }
+.tarjeta .arriba { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.tarjeta .nombre { font-size: .95rem; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tarjeta .monto { font-family: var(--display); font-weight: 800; font-size: 1.3rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tarjeta .de { font-size: .8rem; opacity: .9; }
 
 .fijos-resumen { display: flex; justify-content: space-between; gap: 10px; padding: 12px 14px; background: var(--hoja); border: 1px solid var(--linea); border-radius: 12px; font-size: .88rem; }
 .fijos-resumen span:last-child { color: var(--suave); text-align: right; }
