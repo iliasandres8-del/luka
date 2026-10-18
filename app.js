@@ -760,10 +760,11 @@ function filaMovimiento(m) {
   let signo = "−", clase = "";
   if (m.tipo === "ingreso") { signo = "+"; clase = "entra"; sub = ["Ingreso", m.metodo].filter(Boolean).join(" · "); }
   if (m.tipo === "traslado") { signo = ""; clase = "pasa"; titulo = `${s?.nombre || "?"} → ${destino?.nombre || "?"}`; sub = "Movida entre tarjetas"; }
+  const hora = fechaLocal(f) === fechaLocal(new Date(m.creado)) ? `${String(f.getHours()).padStart(2, "0")}:${String(f.getMinutes()).padStart(2, "0")}` : "";
   const color = m.tipo === "ingreso" ? "var(--verde)" : (s?.color || "#c9d3cd");
   return `<button class="mov" data-mov="${m.id}">
     <i style="background:${color}"></i>
-    <span class="txt">${esc(titulo)}<small>${esc(sub)}${sub ? " · " : ""}${f.getHours().toString().padStart(2, "0")}:${f.getMinutes().toString().padStart(2, "0")}</small></span>
+    <span class="txt">${esc(titulo)}<small>${esc(sub)}${hora ? (sub ? " · " : "") + hora : ""}</small></span>
     <span class="num ${clase}">${signo}${pesos(m.monto)}</span>
   </button>`;
 }
@@ -782,7 +783,7 @@ function vistaSobre() {
   if (!esAhorro && x.presupuesto) {
     const top = Object.entries(movs.filter((m) => m.tipo === "gasto").reduce((r, m) => { const k = (m.descripcion || "otros").toLowerCase(); r[k] = (r[k] || 0) + m.monto; return r; }, {})).sort((a, b) => b[1] - a[1])[0];
     if (s < 0) tip = `Te pasaste ${pesos(-s)}. Toca «Mover plata» y pasa de otra tarjeta que tenga de sobra.`;
-    else if (top && top[1] >= gastado * 0.4 && gastado > 0) tip = `Lo que más se lleva este sobre: «${esc(top[0])}», con ${pesos(top[1])} (${Math.round((top[1] / gastado) * 100)} %).`;
+    else if (top && top[1] >= gastado * 0.4 && movs.filter((m) => m.tipo === "gasto").length >= 3) tip = `Lo que más se lleva este sobre: «${esc(top[0])}», con ${pesos(top[1])} (${Math.round((top[1] / gastado) * 100)} %).`;
     else tip = `Para que te alcance, gasta máximo ${pesos(porDia(s, quedan))} por día.`;
   }
 
@@ -981,6 +982,7 @@ function abrirAnotar(previo = {}) {
       $("a-guardar").onclick = async () => {
         const err = $("a-error");
         f.monto = leerMonto($("a-monto").value); f.descripcion = $("a-desc").value.trim();
+        f.descripcion = f.descripcion.charAt(0).toUpperCase() + f.descripcion.slice(1);
         const falta = !f.monto ? "Escribe cuánto fue." : f.tipo === "gasto" && !f.sobre_id ? "Escoge de qué tarjeta sale." : "";
         if (falta) { err.textContent = falta; err.hidden = false; return; }
         $("a-guardar").disabled = true;
