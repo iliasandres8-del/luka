@@ -110,7 +110,7 @@ sb.auth.onAuthStateChange((evento, sesion) => {
   if (evento === "PASSWORD_RECOVERY") { estado.recuperando = true; estado.usuario = sesion?.user || null; pintarNuevaClave(); return; }
   const antes = estado.usuario?.id;
   estado.usuario = sesion?.user || null;
-  if (antes !== estado.usuario?.id) estado.chat = null;
+  if (antes !== estado.usuario?.id) { estado.chat = null; estado.conexionGmail = undefined; estado.llaveGmail = null; }
   if (evento === "INITIAL_SESSION" || antes !== estado.usuario?.id) setTimeout(arrancar, 0);
 });
 
@@ -560,6 +560,7 @@ function pintarApp() {
     movimientos: vistaMovimientos,
     ajustar: vistaAjustar,
     luka: vistaLuka,
+    gmail: vistaGmail,
     metas: vistaMetas,
     yo: vistaYo,
   };
@@ -583,6 +584,7 @@ const enganches = {
   movimientos: engancharMovimientos,
   ajustar: engancharAjustar,
   luka: engancharLuka,
+  gmail: engancharGmail,
   metas: engancharMetas,
   yo() {
     document.getElementById("salir").onclick = () => sb.auth.signOut();
@@ -594,6 +596,7 @@ const enganches = {
     };
     document.getElementById("ir-ajustar").onclick = () => ir("ajustar");
     pintarAvisos();
+    document.getElementById("ir-gmail").onclick = () => ir("gmail");
   },
 };
 
@@ -1485,6 +1488,139 @@ async function pintarAvisos() {
   };
 }
 
+/* ---------- Gmail del banco (Apps Script de cada persona) ---------- */
+
+const CODIGO_SCRIPT = `// Luka: lee las alertas de tu banco en Gmail y las anota en Luka.
+// Solo puede LEER correos (no enviar ni borrar) y solo busca correos de bancos.
+// A Luka solo le manda el asunto y el texto de esas alertas.
+const LUKA_LLAVE = "__LLAVE__";
+const LUKA_URL = "https://nuotkljmwojymfcodgph.supabase.co/functions/v1/luka-gmail";
+const BUSQUEDA = "{from:nu.com.co from:bancolombia from:notificacionesbancolombia.com from:nequi from:daviplata from:davivienda from:bbva from:bancodebogota from:avvillas from:bancopopular from:colpatria from:scotiabankcolpatria from:lulobank from:bancofalabella from:itau from:bancocajasocial from:rappipay from:movii} -category:promotions newer_than:2d";
+
+function activar() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger("revisar").timeBased().everyMinutes(15).create();
+  revisar();
+  Logger.log("Listo: Luka va a revisar tus alertas cada 15 minutos.");
+}
+
+function gmail(ruta) {
+  var r = UrlFetchApp.fetch("https://gmail.googleapis.com/gmail/v1/users/me/" + ruta, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() } });
+  return JSON.parse(r.getContentText());
+}
+
+function textoDe(parte) {
+  if (!parte) return "";
+  var datos = parte.body && parte.body.data ? Utilities.newBlob(Utilities.base64DecodeWebSafe(parte.body.data)).getDataAsString("UTF-8") : "";
+  if (parte.mimeType === "text/plain" && datos) return datos;
+  if (parte.parts) for (var i = 0; i < parte.parts.length; i++) { var t = textoDe(parte.parts[i]); if (t) return t; }
+  if (parte.mimeType === "text/html" && datos) return datos.replace(/<style[\\s\\S]*?<\\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ");
+  return "";
+}
+
+function revisar() {
+  var props = PropertiesService.getScriptProperties();
+  var vistos = JSON.parse(props.getProperty("vistos") || "[]");
+  var lista = gmail("messages?maxResults=25&q=" + encodeURIComponent(BUSQUEDA)).messages || [];
+  var alertas = [];
+  lista.forEach(function (m) {
+    if (vistos.indexOf(m.id) >= 0) return;
+    var c = gmail("messages/" + m.id + "?format=full");
+    var h = function (n) { var x = (c.payload.headers || []).filter(function (y) { return y.name.toLowerCase() === n; })[0]; return x ? x.value : ""; };
+    alertas.push({ id: m.id, fecha: new Date(Number(c.internalDate)).toISOString(), de: h("from"), asunto: h("subject"), texto: (textoDe(c.payload) || c.snippet || "").slice(0, 3000) });
+  });
+  var r = UrlFetchApp.fetch(LUKA_URL, { method: "post", contentType: "application/json", payload: JSON.stringify({ llave: LUKA_LLAVE, alertas: alertas }), muteHttpExceptions: true });
+  if (r.getResponseCode() === 200) props.setProperty("vistos", JSON.stringify(vistos.concat(alertas.map(function (a) { return a.id; })).slice(-300)));
+  else Logger.log("Luka respondió: " + r.getContentText());
+}
+`;
+
+const MANIFIESTO_SCRIPT = `{
+  "timeZone": "America/Bogota",
+  "runtimeVersion": "V8",
+  "exceptionLogging": "STACKDRIVER",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/script.external_request",
+    "https://www.googleapis.com/auth/script.scriptapp"
+  ]
+}
+`;
+
+async function huellaTexto(s) {
+  const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+function haceCuanto(fecha) {
+  const min = Math.round((Date.now() - new Date(fecha)) / 60000);
+  if (min < 1) return "hace un momento";
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.round(min / 60);
+  return h < 24 ? `hace ${h} h` : `hace ${Math.round(h / 24)} días`;
+}
+
+function vistaGmail() {
+  if (estado.conexionGmail === undefined) {
+    sb.from("conexiones_gmail").select("ultima_vez,total,creado").maybeSingle().then(({ data }) => { estado.conexionGmail = data || null; if (estado.vista === "gmail") pintarApp(); });
+    return `<section class="pantalla inicio"><p class="sub">Cargando…</p></section>`;
+  }
+  const c = estado.conexionGmail, llave = estado.llaveGmail;
+  const estadoTxt = !c ? "" : c.ultima_vez
+    ? `<div class="nota verde"><b>Conectado</b>Última revisión ${haceCuanto(c.ultima_vez)}. Luka ha anotado ${c.total} ${c.total === 1 ? "movimiento" : "movimientos"} de tu correo.</div>`
+    : `<div class="nota"><b>Esperando la primera revisión</b>Si ya hiciste los pasos y ejecutaste «activar», en unos minutos aparece aquí como conectado.</div>`;
+  return `
+  <section class="pantalla inicio">
+    <button class="volver" data-vista="yo">← Yo</button>
+    <h1>Gmail del banco</h1>
+    <p class="sub">Luka puede anotar sola los pagos que te llegan como alerta al correo (Nu, Bancolombia, Nequi, Davivienda y otros). Funciona con un pequeño programa que instalas en tu propio Gmail: solo puede leer, y solo le manda a Luka las alertas del banco.</p>
+    ${estadoTxt}
+    ${llave ? `
+      <ol class="pasos">
+        <li>Hazlo desde un <b>computador</b>, con la cuenta de Gmail donde te llegan las alertas del banco.</li>
+        <li>Abre <a href="https://script.new" target="_blank" rel="noopener">script.new</a>. Arriba, cámbiale el nombre a <b>Luka</b>.</li>
+        <li>Borra lo que hay en el editor y pega el <b>Código 1</b>.
+          <div class="codigo"><button class="chip" data-copiar="codigo">Copiar código 1</button><pre id="codigo">${esc(CODIGO_SCRIPT.replace("__LLAVE__", llave))}</pre></div></li>
+        <li>En el menú de la izquierda toca el engranaje <b>Configuración del proyecto</b> y marca <b>«Mostrar el archivo de manifiesto appsscript.json en el editor»</b>.</li>
+        <li>Vuelve al <b>Editor</b> (el ícono <code>&lt;&gt;</code>), abre <b>appsscript.json</b>, borra todo y pega el <b>Código 2</b>.
+          <div class="codigo"><button class="chip" data-copiar="manifiesto">Copiar código 2</button><pre id="manifiesto">${esc(MANIFIESTO_SCRIPT)}</pre></div></li>
+        <li>Guarda con <b>Ctrl + S</b>. Abre de nuevo <b>Código.gs</b>, arriba escoge la función <b>activar</b> y toca <b>Ejecutar</b>.</li>
+        <li>Google te pide permiso: <b>Revisar permisos</b> → tu cuenta → <b>Configuración avanzada</b> → <b>Ir a Luka (no seguro)</b> → <b>Permitir</b>. Dice «no seguro» porque el programa es tuyo y Google no lo revisó; solo puede leer tus correos.</li>
+        <li>¡Listo! Cada 15 minutos Luka revisa tus alertas y te avisa en el chat lo que anotó.</li>
+      </ol>
+      <p class="sub">Este código es solo tuyo: no se lo pases a nadie. Si sales de esta pantalla ya no se vuelve a mostrar, pero puedes generar uno nuevo.</p>`
+    : `<button class="boton" id="generar-gmail">${c ? "Generar código nuevo" : "Conectar mi Gmail"}</button>
+       ${c ? `<p class="sub">Generar un código nuevo apaga el anterior: te tocaría pegar el código 1 otra vez en tu script.</p>` : ""}`}
+    ${c ? `<button class="boton texto" id="desconectar-gmail">Desconectar Gmail</button>` : ""}
+  </section>`;
+}
+
+function engancharGmail() {
+  const gen = document.getElementById("generar-gmail");
+  if (gen) gen.onclick = async () => {
+    gen.disabled = true;
+    const llave = Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, "0")).join("");
+    const { error } = await sb.from("conexiones_gmail").upsert({ user_id: estado.usuario.id, llave_hash: await huellaTexto(llave), ultima_vez: null, total: estado.conexionGmail?.total || 0 });
+    if (error) { toast("No pude crear el código. Intenta otra vez."); gen.disabled = false; return; }
+    estado.llaveGmail = llave;
+    estado.conexionGmail = { ultima_vez: null, total: estado.conexionGmail?.total || 0 };
+    pintarApp();
+  };
+  app.querySelectorAll("[data-copiar]").forEach((b) => (b.onclick = async () => {
+    const pre = document.getElementById(b.dataset.copiar);
+    try { await navigator.clipboard.writeText(pre.textContent); toast("Copiado"); }
+    catch { const r = document.createRange(); r.selectNodeContents(pre); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Quedó seleccionado: cópialo con Ctrl + C"); }
+  }));
+  const des = document.getElementById("desconectar-gmail");
+  if (des) des.onclick = async () => {
+    if (!des.dataset.seguro) { des.dataset.seguro = "1"; des.textContent = "Luka deja de leer tus alertas. Toca otra vez"; return; }
+    await sb.from("conexiones_gmail").delete().eq("user_id", estado.usuario.id);
+    estado.conexionGmail = null; estado.llaveGmail = null;
+    pintarApp();
+    toast("Gmail desconectado. Si quieres, borra también el script en script.google.com.");
+  };
+}
+
 /* ---------- Chat con Luka ---------- */
 
 const LUKA_CHAT_URL = "https://qzszwuiehdjndzqfbvsw.supabase.co/functions/v1/luka-chat";
@@ -1663,6 +1799,7 @@ function vistaYo() {
     <h3 class="titulo-lista">Avisos</h3>
     <div id="caja-avisos" class="caja-avisos"><p class="sub">Revisando…</p></div>
     <button class="boton" id="ir-ajustar">Ajustar mis tarjetas</button>
+    <button class="boton claro" id="ir-gmail">Conectar Gmail del banco</button>
     <button class="boton claro" id="rehacer">Volver a hacer la bienvenida</button>
     <button class="boton texto" id="salir">Cerrar sesión</button>
   </section>`;
@@ -1670,3 +1807,13 @@ function vistaYo() {
 
 /* ---------- Instalable ---------- */
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+
+// Al volver a la app, traer lo nuevo (por ejemplo, lo que Luka anotó desde el correo)
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState !== "visible" || !estado.usuario || !estado.perfil?.bienvenida_lista) return;
+  if (document.querySelector(".fondo-hoja") || estado.pensando || estado.vista === "mover" || estado.vista === "ajustar") return;
+  try { await cargarTodo(); } catch { return; }
+  estado.chat = null;
+  estado.conexionGmail = undefined;
+  if (!document.querySelector(".fondo-hoja")) pintarApp();
+});

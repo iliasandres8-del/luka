@@ -348,3 +348,12 @@ body.con-hoja { overflow: hidden; }
 .caja-avisos { display: flex; flex-direction: column; gap: 10px; }
 .interruptor { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 48px; padding: 8px 14px; background: var(--hoja); border: 1px solid var(--linea); border-radius: 12px; }
 .interruptor input { width: 22px; height: 22px; accent-color: var(--verde); flex: none; }
+
+/* Gmail del banco */
+.pasos { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 12px; }
+.pasos li { padding-left: 4px; }
+.pasos a { color: var(--verde); font-weight: 600; }
+.codigo { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.codigo pre { width: 100%; max-height: 160px; overflow: auto; margin: 0; padding: 10px 12px; background: #17221c; color: #d9efe3; border-radius: 10px; font-family: var(--mono); font-size: .72rem; line-height: 1.45; }
+.nota.verde { background: var(--verde-claro); color: var(--tinta); }
+code { font-family: var(--mono); font-size: .9em; }
