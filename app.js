@@ -109,6 +109,7 @@ sb.auth.onAuthStateChange((evento, sesion) => {
   if (evento === "PASSWORD_RECOVERY") { estado.recuperando = true; estado.usuario = sesion?.user || null; pintarNuevaClave(); return; }
   const antes = estado.usuario?.id;
   estado.usuario = sesion?.user || null;
+  if (antes !== estado.usuario?.id) estado.chat = null;
   if (evento === "INITIAL_SESSION" || antes !== estado.usuario?.id) setTimeout(arrancar, 0);
 });
 
@@ -547,7 +548,7 @@ const porDia = (saldo, quedan) => Math.floor(Math.max(0, saldo) / quedan / 50) *
 
 function barra() {
   const b = (v, t) => `<button data-vista="${v}" ${estado.vista === v ? 'aria-current="page"' : ""}>${ICONOS[v]}${t}</button>`;
-  return `<div class="barra"><nav aria-label="Secciones">${b("inicio", "Inicio")}${b("movimientos", "Movimientos")}<button class="luka" data-anotar aria-label="Anotar con Luka">L</button>${b("metas", "Metas")}${b("yo", "Yo")}</nav></div>`;
+  return `<div class="barra"><nav aria-label="Secciones">${b("inicio", "Inicio")}${b("movimientos", "Movimientos")}<button class="luka" data-vista="luka" aria-label="Hablar con Luka" ${estado.vista === "luka" ? 'aria-current="page"' : ""}>L</button>${b("metas", "Metas")}${b("yo", "Yo")}</nav></div>`;
 }
 
 function pintarApp() {
@@ -557,6 +558,7 @@ function pintarApp() {
     mover: vistaMover,
     movimientos: vistaMovimientos,
     ajustar: vistaAjustar,
+    luka: vistaLuka,
     metas: () => vistaPronto("Metas", "Aquí vas a ver tus metas, abonarles y saber cuándo llegas a cada una.", 4),
     yo: vistaYo,
   };
@@ -579,6 +581,7 @@ const enganches = {
   mover: engancharMover,
   movimientos: engancharMovimientos,
   ajustar: engancharAjustar,
+  luka: engancharLuka,
   yo() {
     document.getElementById("salir").onclick = () => sb.auth.signOut();
     document.getElementById("rehacer").onclick = () => {
@@ -671,7 +674,7 @@ function vistaInicio() {
         </button>`;
       }).join("")}
     </div>
-    <p class="pista">Toca una tarjeta para abrirla. Mantenla presionada y arrástrala sobre otra para mover plata.</p>
+    <div class="fila-pista"><p class="pista">Toca una tarjeta para abrirla. Mantenla presionada y arrástrala sobre otra para mover plata.</p><button class="chip" data-anotar>+ Anotar</button></div>
     ${fijos ? `<button class="fijos-resumen" id="ver-fijos" aria-expanded="false"><span>Fijos del mes · ${pesos(fijos.presupuesto)}</span><span>${pendientes.length ? `faltan ${pendientes.length} por pagar` : "todos pagados"}</span></button>
     <div class="lista-pagos" id="lista-fijos" hidden>
       ${estado.fijos.map((f) => `<div class="pago"><span>${esc(f.nombre)}<small>${f.dia_mes ? "día " + f.dia_mes + " · " : ""}${pesos(f.monto)}</small></span>${pagados.has(f.nombre) ? `<span class="pagado">Pagado</span>` : `<button class="chip" data-pagar="${f.id}">Ya lo pagué</button>`}</div>`).join("")}
@@ -1163,6 +1166,163 @@ function engancharAjustar() {
     toast("Tarjetas guardadas");
     ir("inicio");
   };
+}
+
+/* ---------- Chat con Luka ---------- */
+
+const LUKA_CHAT_URL = "https://qzszwuiehdjndzqfbvsw.supabase.co/functions/v1/luka-chat";
+const SUGERENCIAS = ["Gasté 15k en almuerzo", "¿Cuánto puedo gastar hoy?", "¿En qué se me va la plata?"];
+
+async function cargarChat() {
+  const { data, error } = await sb.from("mensajes").select("*").order("creado", { ascending: false }).limit(40);
+  estado.chat = error ? [] : data.reverse();
+}
+
+async function guardarMensaje(rol, texto, extra = {}) {
+  const local = { id: "tmp-" + Math.random().toString(36).slice(2), rol, texto, extra, creado: new Date().toISOString() };
+  estado.chat.push(local);
+  const { data } = await sb.from("mensajes").insert({ rol, texto, extra }).select().single();
+  if (data) Object.assign(local, data);
+  return local;
+}
+
+function burbuja(m, i) {
+  if (m.rol === "yo") return `<div class="msg yo">${esc(m.texto)}</div>`;
+  const x = m.extra || {};
+  const tarjetas = (x.tarjetas || []).map((t) => `<div class="mini" style="--c:${t.color};--t:${letraDe(t.color)}"><span>${esc(t.nombre)} · ${esc(t.descripcion)}</span><span class="num">${t.tipo === "ingreso" ? "+" : "−"}${pesos(t.monto)}</span></div>`).join("");
+  const lineas = (x.lineas || []).map((l) => `<span class="linea">${esc(l)}</span>`).join("");
+  const mover = (x.mover || []).map((p, j) => p.hecho
+    ? `<span class="hecho">Movidos ${pesos(p.monto)} de ${esc(p.de)} a ${esc(p.a)}</span>`
+    : `<button class="chip" data-proponer="${i}:${j}">Mover ${pesos(p.monto)} de ${esc(p.de)} a ${esc(p.a)}</button>`).join("");
+  const botones = i === estado.chat.length - 1 ? (x.botones || []).map((b) => `<button class="chip suave" data-decir="${esc(b)}">${esc(b)}</button>`).join("") : "";
+  return `${tarjetas}${m.texto || lineas ? `<div class="msg luka">${esc(m.texto)}${m.texto && lineas ? "<br>" : ""}${lineas}</div>` : ""}${mover || botones ? `<div class="chips acciones-msg">${mover}${botones}</div>` : ""}`;
+}
+
+function vistaLuka() {
+  if (!estado.chat) {
+    cargarChat().then(() => { if (estado.vista === "luka") pintarApp(); });
+    return `<section class="pantalla chat"><p class="sub">Cargando…</p></section>`;
+  }
+  const vacio = !estado.chat.length;
+  return `
+  <section class="chat">
+    <header class="chat-cabeza"><span class="av">L</span><div>Luka<small>anota lo que gastas y responde tus dudas</small></div></header>
+    <div class="msgs" id="msgs">
+      ${vacio ? `<div class="msg luka">¡Hola${estado.perfil?.nombre ? ", " + esc(estado.perfil.nombre.split(" ")[0]) : ""}! Cuéntame en qué gastaste, como se lo dirías a un amigo: "gasté 12 en un perro y 32 en gasolina". También puedes preguntarme si te alcanza para algo.</div>
+        <div class="chips acciones-msg">${SUGERENCIAS.map((s) => `<button class="chip suave" data-decir="${esc(s)}">${esc(s)}</button>`).join("")}</div>` : estado.chat.map(burbuja).join("")}
+      ${estado.pensando ? `<div class="msg luka pensando" aria-label="Luka está escribiendo"><i></i><i></i><i></i></div>` : ""}
+    </div>
+    <form class="redactar" id="redactar">
+      <button type="button" class="mas" data-anotar aria-label="Anotar con formulario">+</button>
+      <input id="texto-chat" placeholder="Escribe lo que gastaste o pregunta…" autocomplete="off" maxlength="600" ${estado.pensando ? "disabled" : ""}>
+      <button type="submit" class="enviar" aria-label="Enviar" ${estado.pensando ? "disabled" : ""}>↑</button>
+    </form>
+  </section>`;
+}
+
+function engancharLuka() {
+  const msgs = document.getElementById("msgs");
+  if (!msgs) return;
+  msgs.scrollTop = msgs.scrollHeight;
+  window.scrollTo(0, document.body.scrollHeight);
+  const input = document.getElementById("texto-chat");
+  document.getElementById("redactar").onsubmit = (e) => { e.preventDefault(); decir(input.value); };
+  app.querySelectorAll("[data-decir]").forEach((b) => (b.onclick = () => decir(b.dataset.decir)));
+  app.querySelectorAll("[data-proponer]").forEach((b) => (b.onclick = () => hacerPropuesta(b)));
+  if (!estado.pensando && matchMedia("(pointer: fine)").matches) input.focus();
+}
+
+// Busca la tarjeta por nombre; si no, por pistas; si no, Otros o la primera de gasto
+function tarjetaPorNombre(nombre, descripcion) {
+  const n = (nombre || "").trim().toLowerCase();
+  const exacta = estado.sobres.find((s) => s.tipo !== "ahorro" && s.nombre.toLowerCase() === n);
+  if (exacta) return exacta;
+  const porPista = sobreDe(sobrePorPista(descripcion));
+  if (porPista) return porPista;
+  return estado.sobres.find((s) => s.nombre === "Otros") || estado.sobres.find((s) => s.tipo === "gasto");
+}
+
+async function decir(texto) {
+  texto = (texto || "").trim();
+  if (!texto || estado.pensando) return;
+  const historial = estado.chat.slice(-10).map((m) => ({ rol: m.rol, texto: [m.texto, ...(m.extra?.lineas || [])].filter(Boolean).join(" ") }));
+  await guardarMensaje("yo", texto);
+  estado.pensando = true;
+  pintarApp();
+
+  let r;
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    const resp = await fetch(LUKA_CHAT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
+      body: JSON.stringify({ mensaje: texto, historial }),
+    });
+    r = await resp.json();
+    if (!resp.ok) throw new Error(r.error || "error");
+  } catch (e) {
+    estado.pensando = false;
+    await guardarMensaje("luka", e.message && e.message !== "Failed to fetch" && e.message !== "error" ? e.message : "No pude conectarme. Revisa el internet e intenta otra vez.");
+    pintarApp();
+    return;
+  }
+
+  // Anotar lo que la persona contó
+  const hoy = fechaLocal(new Date());
+  const tarjetas = [], filas = [];
+  for (const a of r.anotar || []) {
+    const s = a.tipo === "gasto" ? tarjetaPorNombre(a.sobre, a.descripcion) : null;
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(a.fecha || "") && a.fecha <= hoy ? a.fecha : hoy;
+    filas.push({
+      tipo: a.tipo, monto: a.monto, descripcion: a.descripcion || "", metodo: METODOS.includes(a.metodo) ? a.metodo : "",
+      sobre_id: s?.id || null, origen: "chat",
+      fecha: fecha === hoy ? new Date().toISOString() : new Date(fecha + "T12:00:00").toISOString(),
+    });
+    tarjetas.push({ nombre: s ? s.nombre : "Ingreso", color: s ? s.color : "#1f7a55", descripcion: a.descripcion || "", monto: a.monto, tipo: a.tipo });
+  }
+  const lineas = [];
+  if (filas.length) {
+    const { error } = await sb.from("movimientos").insert(filas);
+    if (error) {
+      estado.pensando = false;
+      await guardarMensaje("luka", "Entendí, pero no pude guardar. Revisa el internet e intenta otra vez.");
+      pintarApp();
+      return;
+    }
+    await cargarTodo();
+    const s = saldos(), quedan = diasQuedan();
+    for (const id of [...new Set(filas.filter((f) => f.sobre_id).map((f) => f.sobre_id))]) {
+      const x = sobreDe(id);
+      if (x.tipo === "fijo") { lineas.push(`Quedó en Fijos.`); continue; }
+      lineas.push(s[id] < 0 ? `Ojo: ${x.nombre} quedó en −${pesos(-s[id])}.` : `A ${x.nombre} le quedan ${pesos(s[id])} (${pesos(porDia(s[id], quedan))} por día).`);
+    }
+    const entro = filas.filter((f) => f.tipo === "ingreso").reduce((t, f) => t + f.monto, 0);
+    if (entro) lineas.push(`Te entraron ${pesos(entro)}. Este mes van ${pesos(estado.movimientos.filter((m) => m.tipo === "ingreso").reduce((t, m) => t + m.monto, 0))}.`);
+  }
+
+  const mover = (r.mover || []).filter((p) => {
+    const de = tarjetaPorNombre(p.de), a = tarjetaPorNombre(p.a);
+    return de && a && de.id !== a.id && de.tipo === "gasto" && a.tipo === "gasto";
+  }).slice(0, 2);
+  const textoLuka = r.respuesta || (filas.length ? (filas.length === 1 ? "Listo, anotado." : `Listo, anoté ${filas.length}.`) : "");
+  estado.pensando = false;
+  await guardarMensaje("luka", textoLuka, { tarjetas, lineas, mover, botones: r.botones || [] });
+  pintarApp();
+}
+
+async function hacerPropuesta(boton) {
+  const [i, j] = boton.dataset.proponer.split(":").map(Number);
+  const m = estado.chat[i];
+  const p = m.extra.mover[j];
+  const de = tarjetaPorNombre(p.de), a = tarjetaPorNombre(p.a);
+  if (saldos()[de.id] < p.monto) return toast(`En ${de.nombre} ya no hay ${pesos(p.monto)}.`);
+  boton.disabled = true;
+  const ok = await guardarMovimiento({ tipo: "traslado", monto: p.monto, sobre_id: de.id, sobre_destino_id: a.id, descripcion: `${de.nombre} → ${a.nombre}` });
+  if (!ok) { boton.disabled = false; return; }
+  p.hecho = true;
+  if (!String(m.id).startsWith("tmp-")) await sb.from("mensajes").update({ extra: m.extra }).eq("id", m.id);
+  toast(`Listo: ${pesos(p.monto)} de ${de.nombre} a ${a.nombre}`);
+  pintarApp();
 }
 
 /* ---------- Otras pestañas ---------- */
