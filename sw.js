@@ -1,6 +1,6 @@
 // Guarda la app en el celular para que abra rápido y funcione como aplicación instalada.
 // Archivos propios: primero internet (para tener siempre lo último) y si no hay, lo guardado.
-const CACHE = "luka-v2";
+const CACHE = "luka-v3";
 const ARCHIVOS = ["./", "index.html", "estilos.css", "app.js", "manifest.json", "iconos/icono-192.png", "iconos/icono-512.png", "iconos/favicon-32.png"];
 
 self.addEventListener("install", (e) => {
@@ -13,7 +13,7 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return; // Supabase y fuentes van directo
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: "no-cache" })
       .then((r) => { const copia = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copia)); return r; })
       .catch(() => caches.match(e.request).then((r) => r || caches.match("index.html")))
   );
